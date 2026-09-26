@@ -144,3 +144,4 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+src/config/sociallio-937bf.json

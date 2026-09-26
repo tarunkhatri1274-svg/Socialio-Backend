@@ -52,7 +52,11 @@ export const markNotificationRead = async (req, res) => {
     const notification = await Notification.findOneAndUpdate(
       { _id: notificationId, recipient: userId },
       { $set: { isRead: true } },
-      { new: true }
+      // FIX — { new: true } is the deprecated way to ask for the
+      // post-update document; Mongoose now warns to use
+      // { returnDocument: "after" } instead, matching the underlying
+      // MongoDB driver's own option name. Same behavior either way.
+      { returnDocument: "after" }
     );
 
     if (!notification) {

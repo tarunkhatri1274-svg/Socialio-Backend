@@ -33,7 +33,10 @@ export const updateNotificationSettings = async (req, res) => {
     const settings = await NotificationSettings.findOneAndUpdate(
       { user: userId },
       { $set: update },
-      { new: true, upsert: true }
+      // FIX — same deprecation as notification.controller.js's
+      // markNotificationRead: { new: true } → { returnDocument: "after" }.
+      // upsert: true is unrelated and unchanged.
+      { returnDocument: "after", upsert: true }
     );
 
     res.status(200).json({ success: true, settings });

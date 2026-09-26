@@ -4,6 +4,7 @@ import Message from "../models/messages/message.model.js";
 import User from "../models/user/user.model.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
+import { sendPushToUser } from "../utils/pushNotification.js";
 import cloudinary from "../config/cloudinary.js";
 
 const GROUP_PREFIX = "group_";
@@ -566,6 +567,33 @@ export const sendGroupMessage = async (req, res) => {
       { chatId, groupId: group._id, message: newMessage },
       { skip: senderId }
     );
+
+    // ── NEW — offline-member push fallback. emitToGroupMembers() above
+    // only reaches members with a live socket connection right now;
+    // unlike 1:1 messages (which go through createNotification() in
+    // message.controller.js and so already get a DB record + push
+    // fallback), group messages had no equivalent at all — an offline
+    // or fully-closed-app member got nothing, not even a badge update
+    // on next open. Sending a direct FCM push here (rather than through
+    // createNotification/the Notification model) keeps this change
+    // self-contained without needing a schema change for a new
+    // "group_message" notification type; add that persistence later if
+    // you want group messages to show up in the notification feed too.
+    const senderName = newMessage.user?.username || "Someone";
+    const previewText =
+      text?.slice(0, 100) || (media?.url ? "📎 Media" : sharedPost ? "📷 Shared a post" : "Sent a message");
+    group.members.forEach((m) => {
+      if (m.status !== "accepted") return;
+      if (m.user.toString() === senderId.toString()) return;
+      const sid = onlineUsers.get(m.user.toString());
+      if (!sid) {
+        sendPushToUser(m.user, {
+          title: group.name || "Group message",
+          body: `${senderName}: ${previewText}`,
+          data: { type: "group_message", chatId, groupId: group._id.toString() },
+        });
+      }
+    });
 
     res.status(201).json(newMessage);
   } catch (error) {

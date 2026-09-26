@@ -2,6 +2,7 @@ import User from "../models/user/user.model.js";
 import Notification from "../models/notifications/notification.model.js";
 import NotificationSettings from "../models/notificationsettings/notification.settings.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
+import { sendPushToUser } from "../utils/pushNotification.js";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Category-level toggle map (existing behavior — unchanged)
@@ -131,6 +132,22 @@ export const createNotification = async ({
     const recipientSocketId = onlineUsers.get(recipientId.toString());
     if (recipientSocketId) {
       io.to(recipientSocketId).emit("receiveNotification", notification);
+    } else {
+      // ── FIX — this used to just do nothing here when the recipient
+      // wasn't connected, meaning likes/comments/follows/messages sent
+      // to someone with the app closed vanished into the DB with no
+      // way for them to find out until they happened to reopen the
+      // app. This is the single choke point almost every notification
+      // type already flows through (message_controller.js's
+      // createMessage() calls this too), so one fallback here covers
+      // most of the app. A real socket connection is preferred when
+      // available since it's instant and free; FCM push is the
+      // fallback for offline/backgrounded-too-long/killed.
+      await sendPushToUser(recipientId, {
+        title: "Socialio",
+        body: message || "You have a new notification",
+        data: { type, notificationId: notification._id.toString() },
+      });
     }
 
     return notification;

@@ -1,5 +1,6 @@
 import "./src/config/env.js";
 import "./src/config/cloudinary.js";
+import "./src/config/firebaseAdmin.js";
 import env from "./src/services/simpleENV.js";
 import express from "express";
 import cors from "cors";
