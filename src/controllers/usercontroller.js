@@ -15,7 +15,8 @@ import { sendOtpEmail, generateOtp } from "../utils/sendEmail.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { canViewCollabPost } from "./media.controllers.js";
 import cloudinary from "../config/cloudinary.js";
-
+import jwt from "jsonwebtoken";
+import env from "../services/simpleENV.js";
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── Helper: extract Cloudinary public_id from a URL ───────────────────────
@@ -133,7 +134,31 @@ export const verifyOtp = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+export const refreshAccessToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(401).json({ success: false, message: "No refresh token" });
+    }
 
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, env.refreshtoken);
+    } catch (err) {
+      return res.status(401).json({ success: false, message: "Invalid or expired refresh token" });
+    }
+
+    const user = await User.findById(decoded.id);
+    if (!user) {
+      return res.status(401).json({ success: false, message: "User not found" });
+    }
+
+    const newToken = generateToken.generateAccessToken(user._id);
+    res.json({ success: true, token: newToken });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
 export const registerUser = async (req, res) => {
   try {
     const email = req.body.email?.toLowerCase().trim();
@@ -175,6 +200,7 @@ export const registerUser = async (req, res) => {
     const updatedUser = await User.findOne({ email });
     res.json({
       token: generateToken.generateAccessToken(updatedUser._id),
+      refreshToken: generateToken.generateRefreshToken(updatedUser._id),
       _id: updatedUser._id,
       username: updatedUser.username,
       email: updatedUser.email,
@@ -205,6 +231,7 @@ export const loginUser = async (req, res) => {
       username: user.username,
       email: user.email,
       token: generateToken.generateAccessToken(user._id),
+      refreshToken: generateToken.generateRefreshToken(user._id),
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -947,9 +974,11 @@ export const googleSignup = async (req, res) => {
         await user.save();
       }
       const token = generateToken.generateAccessToken(user._id);
+      const refreshToken = generateToken.generateRefreshToken(user._id);
       return res.json({
         registered: true,
         token,
+        refreshToken,
         _id: user._id,
         username: user.username,
         email: user.email,
@@ -1007,9 +1036,11 @@ export const googleLogin = async (req, res) => {
     }
 
     const token = generateToken.generateAccessToken(user._id);
+    const refreshToken = generateToken.generateRefreshToken(user._id);
 
     res.json({
       token,
+      refreshToken,
       _id: user._id,
       username: user.username,
       email: user.email,

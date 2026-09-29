@@ -4,11 +4,11 @@ import {sendOtp, verifyOtp, registerUser,
    updateProfile, deleteAccount,changePassword,searchUsers,
    getUserById,getPostsByUserId,unfollowUser,followUser,
   blockUser,unblockUser,getBlockedUsers,getPublicReels,resendOtp,
-  googleLogin,googleSignup,logoutUser,getPostById
+  googleLogin,googleSignup,logoutUser,getPostById,refreshAccessToken
 } from "../controllers/usercontroller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { upload } from "../config/cloudinary.js";
-import { sendOtpEmail } from "../utils/sendemail.js";
+
 const UserRouter = express.Router();
 // ================= AUTH ROUTES =================
 // Send OTP for email verification
@@ -18,7 +18,10 @@ UserRouter.post("/verify-otp", verifyOtp);
 // Register user after OTP verification
 UserRouter.post("/register", registerUser);
 // Login user
+// Login user
 UserRouter.post("/login", loginUser);
+// Refresh an expired access token
+UserRouter.post("/refresh-token", refreshAccessToken);
 // ================= PASSWORD ROUTES =================
 // Forgot password -> send OTP
 UserRouter.post("/forgot-password", forgotPassword);
