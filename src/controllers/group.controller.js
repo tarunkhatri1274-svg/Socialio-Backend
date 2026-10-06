@@ -906,3 +906,141 @@ export const clearGroupWallpaper = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────
+// Polls — WhatsApp-style. A poll is a normal Message with a `poll` sub-doc
+// (see message.model.js). Votes are stored as user ids on each option; the
+// client resolves names/avatars from the group's member list, so the
+// "voter list" costs no extra queries.
+// ─────────────────────────────────────────────────────────────────────────
+const MAX_POLL_OPTIONS = 12;
+
+const pollPayload = (message) => ({
+  messageId: message._id,
+  chatId: message.chatId,
+  options: message.poll.options.map((o) => ({ _id: o._id, text: o.text, votes: o.votes })),
+});
+
+// ── Create a poll in a group ───────────────────────────────────────────
+export const createGroupPoll = async (req, res) => {
+  try {
+    const senderId = req.user._id;
+    const { chatId, question, options = [], allowMultiple = true } = req.body;
+
+    const q = (question || "").trim();
+    if (!q) return res.status(400).json({ success: false, message: "Poll question is required" });
+    if (q.length > 250) return res.status(400).json({ success: false, message: "Question is too long (max 250)" });
+
+    const cleaned = [...new Set((options || []).map((o) => String(o || "").trim()).filter(Boolean))];
+    if (cleaned.length < 2) {
+      return res.status(400).json({ success: false, message: "A poll needs at least 2 different options" });
+    }
+    if (cleaned.length > MAX_POLL_OPTIONS) {
+      return res.status(400).json({ success: false, message: `A poll can have at most ${MAX_POLL_OPTIONS} options` });
+    }
+
+    const group = await Group.findOne({ chatId });
+    if (!group) return res.status(404).json({ success: false, message: "Group not found" });
+    if (!group.isAcceptedMember(senderId)) {
+      return res.status(403).json({ success: false, message: "You're not a member of this group" });
+    }
+
+    const newMessage = await Message.create({
+      chatId,
+      group: group._id,
+      user: senderId,
+      text: q, // kept so reply-quotes / previews have something to show
+      poll: {
+        question: q,
+        allowMultiple: allowMultiple !== false,
+        options: cleaned.map((text) => ({ text: text.slice(0, 100), votes: [] })),
+      },
+    });
+    await newMessage.populate("user", "username profilePic");
+
+    group.lastMessageAt = new Date();
+    group.lastMessageText = `📊 ${q}`.slice(0, 80);
+    group.members.forEach((m) => {
+      if (m.status !== "accepted") return;
+      if (m.user.toString() === senderId.toString()) return;
+      const current = group.unreadCounts.get(m.user.toString()) || 0;
+      group.unreadCounts.set(m.user.toString(), current + 1);
+    });
+    group.clearedFor = [];
+    await group.save();
+
+    emitToGroupMembers(
+      group,
+      "receiveGroupMessage",
+      { chatId, groupId: group._id, message: newMessage },
+      { skip: senderId }
+    );
+
+    // Offline-member push fallback (same as sendGroupMessage)
+    const senderName = newMessage.user?.username || "Someone";
+    group.members.forEach((m) => {
+      if (m.status !== "accepted") return;
+      if (m.user.toString() === senderId.toString()) return;
+      if (!onlineUsers.get(m.user.toString())) {
+        sendPushToUser(m.user, {
+          title: group.name || "Group message",
+          body: `${senderName} created a poll: ${q.slice(0, 80)}`,
+          data: { type: "group_message", chatId, groupId: group._id.toString() },
+        });
+      }
+    });
+
+    res.status(201).json(newMessage);
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// ── Vote / change vote / remove vote ───────────────────────────────────
+// Body: { optionIds: [...] } = the user's FULL selection after this action.
+// An empty array removes the user's vote (WhatsApp "tap again to unvote").
+export const voteGroupPoll = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { messageId } = req.params;
+    const { optionIds = [] } = req.body;
+
+    const message = await Message.findById(messageId);
+    if (!message || !message.poll) {
+      return res.status(404).json({ success: false, message: "Poll not found" });
+    }
+
+    const group = await Group.findOne({ chatId: message.chatId });
+    if (!group) return res.status(404).json({ success: false, message: "Group not found" });
+    if (!group.isAcceptedMember(userId)) {
+      return res.status(403).json({ success: false, message: "You're not a member of this group" });
+    }
+
+    const validIds = new Set(message.poll.options.map((o) => o._id.toString()));
+    let chosen = [...new Set((optionIds || []).map(String))].filter((id) => validIds.has(id));
+    if (!message.poll.allowMultiple) chosen = chosen.slice(0, 1);
+
+    // Atomic updates (no save()) so two people voting at the same moment
+    // can't hit a Mongoose VersionError or overwrite each other's votes.
+    await Message.updateOne(
+      { _id: messageId },
+      { $pull: { "poll.options.$[].votes": userId } }
+    );
+    if (chosen.length) {
+      await Message.updateOne(
+        { _id: messageId },
+        { $addToSet: { "poll.options.$[o].votes": userId } },
+        { arrayFilters: [{ "o._id": { $in: chosen.map((id) => new mongoose.Types.ObjectId(id)) } }] }
+      );
+    }
+
+    const updated = await Message.findById(messageId).select("chatId poll");
+    const payload = pollPayload(updated);
+
+    emitToGroupMembers(group, "groupPollUpdated", payload);
+
+    res.status(200).json({ success: true, ...payload });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};

@@ -1,5 +1,22 @@
 import mongoose from "mongoose";
 
+// ── Poll (WhatsApp-style) — only set on group poll messages. Votes are
+// user ids per option; voter names/avatars are resolved client-side from
+// the group's member list.
+const pollOptionSchema = new mongoose.Schema({
+  text: { type: String, required: true, trim: true, maxlength: 100 },
+  votes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+});
+
+const pollSchema = new mongoose.Schema(
+  {
+    question: { type: String, required: true, trim: true, maxlength: 250 },
+    allowMultiple: { type: Boolean, default: true },
+    options: { type: [pollOptionSchema], default: [] },
+  },
+  { _id: false }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     chatId: {
@@ -86,6 +103,8 @@ const messageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    poll: { type: pollSchema, default: undefined },
 
     isEphemeral: {
       type: Boolean,

@@ -20,6 +20,8 @@ import {
   getGroupWallpaper,
   setGroupWallpaper,
   clearGroupWallpaper,
+  createGroupPoll,
+  voteGroupPoll,
 } from "../controllers/group.controller.js";
 import { uploadWallpaper, handleUploadError } from "../config/cloudinary.js";
 
@@ -45,6 +47,10 @@ GroupRouter.put("/messages/:messageId", protect, editGroupMessage);
 GroupRouter.patch("/messages/like/:messageId", protect, toggleLikeGroupMessage);
 GroupRouter.delete("/messages/:messageId", protect, deleteGroupMessage);
 GroupRouter.post("/:chatId/messages/forward", protect, forwardMessageToGroup);
+
+// ── Polls
+GroupRouter.post("/messages/poll", protect, createGroupPoll);
+GroupRouter.post("/messages/poll/:messageId/vote", protect, voteGroupPoll);
 
 // ── Group wallpaper (per-user, per-group) — same contract as the 1:1
 // version in message.routes.js.

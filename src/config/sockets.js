@@ -428,7 +428,7 @@ io = new Server(httpServer, {
     socket.on("callCancelled", ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callCancelled"); });
     socket.on("callBusy",      ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callBusy"); });
     socket.on("liveCancelled", ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("liveCancelled"); });
-
+    socket.on("callConnected", ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callConnected"); });
     socket.on("iceCandidate", ({ to, candidate }) => {
       const recipientSocketId = onlineUsers.get(to?.toString());
       const fromUserId = [...onlineUsers.entries()].find(([, sid]) => sid === socket.id)?.[0];
