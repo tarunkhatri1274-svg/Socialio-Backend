@@ -4,7 +4,9 @@ import {sendOtp, verifyOtp, registerUser,
    updateProfile, deleteAccount,changePassword,searchUsers,
    getUserById,getPostsByUserId,unfollowUser,followUser,
   blockUser,unblockUser,getBlockedUsers,getPublicReels,resendOtp,
-  googleLogin,googleSignup,logoutUser,getPostById,refreshAccessToken
+  googleLogin,googleSignup,logoutUser,getPostById,refreshAccessToken,
+  // NEW — recent searches
+  getRecentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches
 } from "../controllers/usercontroller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { upload } from "../config/cloudinary.js";
@@ -17,7 +19,6 @@ UserRouter.post("/send-otp", sendOtp);
 UserRouter.post("/verify-otp", verifyOtp);
 // Register user after OTP verification
 UserRouter.post("/register", registerUser);
-// Login user
 // Login user
 UserRouter.post("/login", loginUser);
 // Refresh an expired access token
@@ -38,6 +39,17 @@ UserRouter.put( "/update-profile",protect,upload.fields([ { name: "profilePic", 
 UserRouter.delete("/delete-account", protect, deleteAccount);
 //Search users by username
 UserRouter.get("/search", protect, searchUsers);
+
+// ================= RECENT SEARCHES (NEW) =================
+// Get my recent searches (most recent first)
+UserRouter.get("/recent-searches", protect, getRecentSearches);
+// Clear all my recent searches
+UserRouter.delete("/recent-searches", protect, clearRecentSearches);
+// Add a user to my recent searches (moves to top if already there)
+UserRouter.post("/recent-searches/:id", protect, addRecentSearch);
+// Remove one user from my recent searches (the X button)
+UserRouter.delete("/recent-searches/:id", protect, removeRecentSearch);
+
 // Get user by ID (for profile viewing)
 UserRouter.get("/user/:userId", protect, getUserById);
 // Get posts by user ID

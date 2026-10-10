@@ -127,7 +127,7 @@ export const createNotification = async ({
     });
 
     await notification.populate("sender", "username profilePic");
-
+    await notification.populate("post", "media postType text"); 
     const io = getIO();
     const recipientSocketId = onlineUsers.get(recipientId.toString());
     if (recipientSocketId) {

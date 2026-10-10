@@ -592,6 +592,7 @@ export const deleteAccount = async (req, res) => {
           following:      userId,
           followRequests: userId,
           blockedUsers:   userId,
+          recentSearches: { user: userId }, 
           savedPosts:     { $in: posts.map((p) => p._id) },
         },
       }
@@ -625,7 +626,77 @@ export const searchUsers = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+// ── RECENT SEARCHES ────────────────────────────────────────────────────────
+const RECENT_SEARCH_MAX = 15;
 
+export const getRecentSearches = async (req, res) => {
+  try {
+    const me = await User.findById(req.user.id)
+      .select("recentSearches blockedUsers")
+      .populate("recentSearches.user", "_id username profilePic bio isPrivate");
+    if (!me) return res.status(404).json({ success: false, message: "User not found" });
+
+    const blocked = new Set((me.blockedUsers || []).map((id) => id.toString()));
+    const users = (me.recentSearches || [])
+      .map((r) => r.user)
+      .filter((u) => u && !blocked.has(u._id.toString())); // drops deleted + blocked users
+
+    res.status(200).json({ success: true, users });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const addRecentSearch = async (req, res) => {
+  try {
+    const me = req.user.id;
+    const targetId = req.params.id;
+    if (me === targetId) return res.status(200).json({ success: true });
+
+    const exists = await User.exists({ _id: targetId });
+    if (!exists) return res.status(404).json({ success: false, message: "User not found" });
+
+    // remove any old entry first so it moves to the top (Mongo can't $pull and $push the same field in one update)
+    await User.updateOne({ _id: me }, { $pull: { recentSearches: { user: targetId } } });
+    await User.updateOne(
+      { _id: me },
+      {
+        $push: {
+          recentSearches: {
+            $each: [{ user: targetId, searchedAt: new Date() }],
+            $position: 0,
+            $slice: RECENT_SEARCH_MAX,
+          },
+        },
+      }
+    );
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const removeRecentSearch = async (req, res) => {
+  try {
+    await User.updateOne(
+      { _id: req.user.id },
+      { $pull: { recentSearches: { user: req.params.id } } }
+    );
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const clearRecentSearches = async (req, res) => {
+  try {
+    await User.updateOne({ _id: req.user.id }, { $set: { recentSearches: [] } });
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 export const getUserById = async (req, res) => {
   try {
     const userId = req.params.userId;
@@ -1070,3 +1141,4 @@ export const logoutUser = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+

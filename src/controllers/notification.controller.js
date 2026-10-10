@@ -23,6 +23,7 @@ export const getNotifications = async (req, res) => {
           select: "author group",
           populate: { path: "author", select: "_id username profilePic" },
         })
+        .populate("post", "media postType text")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
