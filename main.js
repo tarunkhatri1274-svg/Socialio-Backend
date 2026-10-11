@@ -6,7 +6,7 @@ import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 import connectDB from "./src/db/mongodb.js";
-import { initSocket } from "./src/config/sockets.js";
+import { initSocket, cleanupStaleLiveStories } from "./src/config/sockets.js";
 import Conversation from "./src/models/messages/conversation.model.js";
 import UserRouter from "./src/routes/userroutes.js";
 import MediaRouter from "./src/routes/mediaroutes.js";
@@ -38,8 +38,12 @@ const httpServer = createServer(app);
 initSocket(httpServer);
 
 // ================= DATABASE =================
-connectDB().then(() => {
+connectDB().then(async () => {
   console.log("MongoDB connected");
+
+  // ── A fresh process has no live rooms, so any live Story doc still in
+  // the DB is a leftover from before this restart — remove it.
+  await cleanupStaleLiveStories();
 
   // ── Start the hourly cleanup job: media expiry (2d) + tombstone purge (1d) ──
   startMediaExpiryJob();

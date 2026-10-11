@@ -3,7 +3,7 @@ import User from "../models/user/user.model.js";
 import Message from "../models/messages/message.model.js";
 import Conversation from "../models/messages/conversation.model.js";
 import { createNotification } from "./notification.helper.js";
-import { getIO, onlineUsers } from "../config/sockets.js";
+import { getIO, onlineUsers, isLiveRoomActive } from "../config/sockets.js";
 import { destroyCloudinaryAssetById, extractCloudinaryMeta } from "../jobs/expire.media.js";
 import { isBlockedEitherWay } from "../utils/blockCheck.js";
 import mongoose from "mongoose";
@@ -37,6 +37,17 @@ const canViewPopulatedStory = (story, viewerId, myBlockedIds, blockedByIds) => {
   const followers = story.author?.followers || [];
   return followers.some((id) => id.toString() === viewerId.toString());
 };
+
+// ── A live story is only real while its socket room exists. Rooms live in
+// server memory and are lost on every restart / Render spin-down, so a
+// leftover live doc must never be listed as LIVE. The grace window covers
+// the moment between the REST call that creates the doc and the host's
+// socket emitting startLive (the room doesn't exist yet in that gap).
+const LIVE_LISTING_GRACE_MS = 30 * 1000;
+const isLiveStillActive = (s) =>
+  s.storyType !== "live" ||
+  isLiveRoomActive(s.liveRoomId) ||
+  Date.now() - new Date(s.createdAt).getTime() < LIVE_LISTING_GRACE_MS;
 
 const stripFollowers = (story) => {
   const obj = story.toObject ? story.toObject() : story;
@@ -292,6 +303,11 @@ export const addStory = async (req, res) => {
 export const startLiveStory = async (req, res) => {
   try {
     const roomId = `live_${req.user._id}`;
+
+    // One live per user: clear any earlier live doc (e.g. left over from a
+    // live that never ended cleanly) so they can't pile up as extra slides.
+    await Story.deleteMany({ author: req.user._id, storyType: "live" });
+
     const story = await Story.create({
       author: req.user._id,
       storyType: "live",
@@ -385,6 +401,7 @@ export const getAllStories = async (req, res) => {
       : new Set((me?.mutedUsers || []).filter((m) => m.muteStory).map((m) => m.user.toString()));
 
     const visible = stories
+      .filter(isLiveStillActive)
       .filter((s) => canViewPopulatedStory(s, req.user._id, myBlockedIds, blockedByIds))
       .filter((s) => {
         const authorId = (s.author?._id || s.author).toString();
@@ -408,11 +425,15 @@ export const getUserStories = async (req, res) => {
     const { userId } = req.params;
     const myId = req.user._id.toString();
 
-    const [stories, me, blockedByOthers] = await Promise.all([
+    const [allStories, me, blockedByOthers] = await Promise.all([
       Story.find({ author: userId }).populate("author", "username profilePic followers").sort({ createdAt: -1 }),
       User.findById(req.user._id).select("blockedUsers mutedUsers"),
       User.find({ blockedUsers: req.user._id }).select("_id"),
     ]);
+
+    // Drop stale live docs BEFORE the 403 check below, so an author whose
+    // only "story" is a leftover live doc doesn't trigger a false 403.
+    const stories = allStories.filter(isLiveStillActive);
 
     const myBlockedIds = new Set((me?.blockedUsers || []).map((id) => id.toString()));
     const blockedByIds = new Set(blockedByOthers.map((u) => u._id.toString()));

@@ -7,6 +7,50 @@ let io;
 export const onlineUsers = new Map();
 const liveRooms = new Map();
 
+// ── LIVE STORY CLEANUP ──────────────────────────────────────────────────
+// A live story's Story doc only means something while its in-memory room
+// (liveRooms) exists. Rooms vanish whenever the server restarts or spins
+// down (every Render deploy / idle spin-down) or the host drops off, but
+// the Story doc used to stay in MongoDB forever, which is what left a
+// phantom "LIVE" ring and piled-up slides on the home screen.
+export const isLiveRoomActive = (roomId) => liveRooms.has(roomId);
+
+// A live doc is created by the REST call just BEFORE the host's socket
+// emits startLive, so a brand-new doc legitimately has no room yet. Never
+// treat anything younger than this as stale.
+const LIVE_DOC_GRACE_MS = 30 * 1000;
+
+const removeLiveStoryDocs = async (roomId, { onlyStale = false } = {}) => {
+  if (!roomId) return;
+  try {
+    const filter = { storyType: "live", liveRoomId: roomId };
+    if (onlyStale) filter.createdAt = { $lt: new Date(Date.now() - LIVE_DOC_GRACE_MS) };
+    const result = await Story.deleteMany(filter);
+    if (result.deletedCount > 0) {
+      // roomId is always `live_<authorId>` (see startLiveStory)
+      io?.emit("liveStoryEnded", { roomId, authorId: roomId.replace(/^live_/, "") });
+    }
+  } catch (e) {
+    console.error("removeLiveStoryDocs error:", e.message);
+  }
+};
+
+// Run once at boot: a freshly started server has no live rooms, so any live
+// Story doc still in the DB is a leftover from before the restart.
+// NOTE: assumes ONE backend per database. If a second backend (e.g. your
+// local one) is pointed at the same Atlas DB with a live in progress, this
+// ends that live too.
+export const cleanupStaleLiveStories = async () => {
+  try {
+    const result = await Story.deleteMany({ storyType: "live" });
+    if (result.deletedCount > 0) {
+      console.log(`[live] removed ${result.deletedCount} stale live stor${result.deletedCount === 1 ? "y" : "ies"}`);
+    }
+  } catch (e) {
+    console.error("cleanupStaleLiveStories error:", e.message);
+  }
+};
+
 // ── STORY ACCESS RULE ───────────────────────────────────────────────────
 const canAccessStory = async (story, viewerId) => {
   if (!story || !viewerId) return false;
@@ -346,7 +390,15 @@ io = new Server(httpServer, {
     // room can never process out of order relative to one another.
     socket.on("joinLive", ({ roomId, viewerId }) => enqueueRoomTask(roomId, async () => {
       const room = liveRooms.get(roomId);
-      if (!room) return socket.emit("liveAccessDenied", { roomId, reason: "ended" });
+      if (!room) {
+        // No room in memory = this live is over (or the server restarted).
+        // Remove its leftover Story doc so it stops showing as LIVE, and
+        // emit liveEnded so the viewer actually closes and returns home
+        // instead of sitting on "Returning to home…" forever.
+        await removeLiveStoryDocs(roomId, { onlyStale: true });
+        socket.emit("liveAccessDenied", { roomId, reason: "ended" });
+        return socket.emit("liveEnded", { roomId });
+      }
 
       let allowed;
       if (room.storyId) {
@@ -393,6 +445,7 @@ io = new Server(httpServer, {
       liveRooms.delete(roomId);
       roomQueues.delete(roomId);
       socket.leave(roomId);
+      removeLiveStoryDocs(roomId);
     });
 
     socket.on("getLiveRooms", () => {
@@ -473,6 +526,7 @@ io = new Server(httpServer, {
           io.to(roomId).emit("liveEnded", { roomId, storyId: room.storyId });
           liveRooms.delete(roomId);
           roomQueues.delete(roomId);
+          removeLiveStoryDocs(roomId); // host dropped without ending cleanly
           break;
         }
       }
