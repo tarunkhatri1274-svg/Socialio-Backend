@@ -75,17 +75,6 @@ app.use(
 );
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use((req, res, next) => {
-  console.log(">>>", req.method, req.originalUrl);
-  next();
-});
-// ── TEMPORARY DEBUG — remove once the bad-JSON sender is found ──────────
-app.use((err, req, res, next) => {
-  if (err.type === "entity.parse.failed") {
-    console.log("[BadJSON]", req.method, req.originalUrl, "| body was:", JSON.stringify(err.body));
-  }
-  next(err);
-});
 
 // ================= MAIN API ROUTES =================
 app.use("/api/auth", UserRouter);
