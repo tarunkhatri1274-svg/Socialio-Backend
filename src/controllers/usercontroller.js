@@ -11,7 +11,7 @@ import NotificationSettings from "../models/notificationsettings/notification.se
 import bcrypt from "bcryptjs";
 import generateToken from "../utils/generateToken.js";
 import { OAuth2Client } from "google-auth-library";
-import { sendOtpEmail, generateOtp } from "../utils/sendEmail.js";
+import { sendOtpEmail, generateOtp } from "../utils/sendemail.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { canViewCollabPost } from "./media.controllers.js";
 import cloudinary from "../config/cloudinary.js";
