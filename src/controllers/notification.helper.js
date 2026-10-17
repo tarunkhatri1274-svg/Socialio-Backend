@@ -128,27 +128,21 @@ export const createNotification = async ({
 
     await notification.populate("sender", "username profilePic");
     await notification.populate("post", "media postType text"); 
-    const io = getIO();
-    const recipientSocketId = onlineUsers.get(recipientId.toString());
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit("receiveNotification", notification);
-    } else {
-      // ── FIX — this used to just do nothing here when the recipient
-      // wasn't connected, meaning likes/comments/follows/messages sent
-      // to someone with the app closed vanished into the DB with no
-      // way for them to find out until they happened to reopen the
-      // app. This is the single choke point almost every notification
-      // type already flows through (message_controller.js's
-      // createMessage() calls this too), so one fallback here covers
-      // most of the app. A real socket connection is preferred when
-      // available since it's instant and free; FCM push is the
-      // fallback for offline/backgrounded-too-long/killed.
-      await sendPushToUser(recipientId, {
-        title: "Socialio",
-        body: message || "You have a new notification",
-        data: { type, notificationId: notification._id.toString() },
-      });
-    }
+   const io = getIO();
+const recipientSocketId = onlineUsers.get(recipientId.toString());
+if (recipientSocketId) {
+  io.to(recipientSocketId).emit("receiveNotification", notification);
+}
+
+// Always send FCM. A backgrounded app often still has a "connected"
+// socket that can't show anything. In the foreground, your onMessage
+// handler ignores the push, so there is no duplicate.
+await sendPushToUser(recipientId, {
+  title: "Socialio",
+  body: message || "You have a new notification",
+  data: { type: String(type), notificationId: notification._id.toString() },
+});
+    
 
     return notification;
   } catch (error) {

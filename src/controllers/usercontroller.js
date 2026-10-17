@@ -1128,6 +1128,12 @@ export const logoutUser = async (req, res) => {
     const userId = req.user?._id?.toString() || req.user?.id;
     if (userId) {
       try {
+        await User.findByIdAndUpdate(userId, {
+          $set: { fcmToken: null, fcmPlatform: null },
+        });
+      } catch {}
+
+      try {
         const io = getIO();
         const socketId = onlineUsers.get(userId);
         if (socketId) {
@@ -1142,3 +1148,28 @@ export const logoutUser = async (req, res) => {
   }
 };
 
+// ================= SAVE / CLEAR DEVICE PUSH TOKEN =================
+export const updateDeviceToken = async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+    const { fcmToken, platform } = req.body;
+
+    if (fcmToken) {
+      // One physical phone = one token. If someone else was logged in
+      // on this phone before, remove the token from their account so
+      // their notifications don't show up on this user's device.
+      await User.updateMany(
+        { fcmToken, _id: { $ne: userId } },
+        { $set: { fcmToken: null, fcmPlatform: null } }
+      );
+    }
+
+    await User.findByIdAndUpdate(userId, {
+      $set: { fcmToken: fcmToken || null, fcmPlatform: platform || null },
+    });
+
+    res.status(200).json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};

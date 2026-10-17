@@ -130,6 +130,11 @@ const userSchema = new mongoose.Schema(
   },
 ],
     blockedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
+    // ── Push notifications (FCM). Saved by PUT /auth/device-token and
+    // read by sendPushToUser() in utils/pushNotification.js.
+    fcmToken: { type: String, default: null },
+    fcmPlatform: { type: String, default: null },
   },
   { timestamps: true }
 );

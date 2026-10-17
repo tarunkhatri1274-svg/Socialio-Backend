@@ -23,42 +23,41 @@
 // If your userroutes.js controller saves that under a different field
 // name, change the `.select("fcmToken")` and `user?.fcmToken` lines
 // below to match.
-
 import { getMessaging } from "firebase-admin/messaging";
 import firebaseApp, { isFirebaseAdminReady } from "../config/firebaseAdmin.js";
 import User from "../models/user/user.model.js";
 
 export async function sendPushToUser(userId, { title, body, data = {} } = {}) {
-  if (!isFirebaseAdminReady || !userId) return;
+  if (!isFirebaseAdminReady) {
+    console.log("PUSH SKIPPED: firebase admin not ready");
+    return;
+  }
+  if (!userId) return;
 
   try {
     const user = await User.findById(userId).select("fcmToken");
-    if (!user?.fcmToken) return;
+    if (!user?.fcmToken) {
+      console.log("PUSH SKIPPED: no fcmToken for user", String(userId));
+      return;
+    }
 
     await getMessaging(firebaseApp).send({
       token: user.fcmToken,
-      // A `notification` payload (as opposed to data-only) is what lets
-      // Android display this automatically even with the app fully
-      // killed, with zero JS involvement on the client.
       notification: { title, body },
-      // FCM data payloads must be string-only values.
       data: Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)])
       ),
       android: {
         priority: "high",
         notification: {
-          // Must match CHANNEL_ID in the app's PushNotifications.js so
-          // it uses the same (already-fixed) sound/importance/icon
-          // settings instead of Android's generic default channel.
           channelId: "socialio-default-v2",
           sound: "default",
         },
       },
     });
+
+    console.log("PUSH SENT to", String(userId));
   } catch (err) {
-    // Common cause: token is stale (user uninstalled, or FCM rotated it
-    // and the new one hasn't synced yet). Log and move on.
     console.log("sendPushToUser failed:", err.message);
   }
 }

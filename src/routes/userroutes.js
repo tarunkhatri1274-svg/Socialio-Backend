@@ -5,7 +5,7 @@ import {sendOtp, verifyOtp, registerUser,
    getUserById,getPostsByUserId,unfollowUser,followUser,
   blockUser,unblockUser,getBlockedUsers,getPublicReels,resendOtp,
   googleLogin,googleSignup,logoutUser,getPostById,refreshAccessToken,
-  // NEW — recent searches
+  updateDeviceToken,
   getRecentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches
 } from "../controllers/usercontroller.js";
 import { protect } from "../middlewares/auth.middleware.js";
@@ -72,5 +72,8 @@ UserRouter.post("/google-login", googleLogin);
 UserRouter.post("/google-signup", googleSignup);
 //logout user
 UserRouter.post("/logout", protect, logoutUser);
+
+// Save / clear this device's FCM push token
+UserRouter.put("/device-token", protect, updateDeviceToken);
 
 export default UserRouter;

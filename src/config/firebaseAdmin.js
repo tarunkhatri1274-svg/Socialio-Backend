@@ -35,26 +35,42 @@ import fs from "fs";
 
 let serviceAccount;
 
-if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-} else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-  serviceAccount = JSON.parse(
-    fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_PATH, "utf8")
-  );
-} else {
-  console.warn(
-    "[firebaseAdmin] Neither FIREBASE_SERVICE_ACCOUNT_JSON nor FIREBASE_SERVICE_ACCOUNT_PATH is set. " +
-      "Push notifications to closed/killed apps will be silently skipped until this is configured."
-  );
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    serviceAccount = JSON.parse(
+      fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_PATH, "utf8")
+    );
+  } else {
+    console.warn(
+      "[firebaseAdmin] Neither FIREBASE_SERVICE_ACCOUNT_JSON nor FIREBASE_SERVICE_ACCOUNT_PATH is set. " +
+        "Push notifications to closed/killed apps will be silently skipped until this is configured."
+    );
+  }
+
+  // Render can turn the private key's real newlines into literal "\n"
+  // text, which makes cert() fail with "Invalid PEM formatted message".
+  if (serviceAccount?.private_key) {
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+  }
+} catch (err) {
+  console.error("[firebaseAdmin] Failed to read service account:", err.message);
+  serviceAccount = undefined;
 }
 
 let firebaseApp;
-if (serviceAccount) {
-  // getApps() (not admin.apps) is the modular-API way to check "has
-  // this already been initialized" — guards against double-init if
-  // this file is ever imported more than once (e.g. by a test runner).
-  firebaseApp = getApps().length ? getApps()[0] : initializeApp({ credential: cert(serviceAccount) });
+try {
+  if (serviceAccount) {
+    firebaseApp = getApps().length
+      ? getApps()[0]
+      : initializeApp({ credential: cert(serviceAccount) });
+    console.log("[firebaseAdmin] Firebase Admin ready: true");
+  }
+} catch (err) {
+  console.error("[firebaseAdmin] initializeApp failed:", err.message);
+  firebaseApp = undefined;
 }
 
-export const isFirebaseAdminReady = !!serviceAccount;
+export const isFirebaseAdminReady = !!firebaseApp;
 export default firebaseApp;
