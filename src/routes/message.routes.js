@@ -18,6 +18,7 @@ import {
   getConversationWallpaper,
   setConversationWallpaper,
   clearConversationWallpaper,
+  markChatSeen,
 } from "../controllers/message.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { uploadMessage, uploadWallpaper, handleUploadError } from "../config/cloudinary.js";
@@ -41,6 +42,9 @@ MessageRouter.get("/search-users", protect, searchAllUsers);
 MessageRouter.post("/", protect, createMessage);
 
 MessageRouter.get("/chat/:chatId", protect, getMessages);
+
+// Mark chat as read while the window is open (resets unread badge)
+MessageRouter.post("/chat/:chatId/seen", protect, markChatSeen);
 
 MessageRouter.post("/forward/:messageId", protect, forwardMessage);
 

@@ -1044,3 +1044,28 @@ export const voteGroupPoll = async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 };
+
+
+
+// ── Mark a group chat as read (called while the group window is open) ───
+export const markGroupSeen = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const userId = req.user._id;
+
+    const group = await Group.findOne({ chatId }).select("members");
+    if (!group) return res.status(404).json({ success: false, message: "Group not found" });
+    if (!group.isAcceptedMember(userId)) {
+      return res.status(403).json({ success: false, message: "You're not a member of this group" });
+    }
+
+    await Group.updateOne(
+      { chatId },
+      { $set: { [`unreadCounts.${userId.toString()}`]: 0 } }
+    );
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

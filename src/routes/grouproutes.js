@@ -22,6 +22,7 @@ import {
   clearGroupWallpaper,
   createGroupPoll,
   voteGroupPoll,
+  markGroupSeen,
 } from "../controllers/group.controller.js";
 import { uploadWallpaper, handleUploadError } from "../config/cloudinary.js";
 
@@ -42,6 +43,8 @@ GroupRouter.post("/:chatId/remove-member", protect, removeGroupMember);
 GroupRouter.patch("/:chatId/rename", protect, renameGroup);
 
 GroupRouter.get("/:chatId/messages", protect, getGroupMessages);
+// Mark group as read while the window is open (resets unread badge)
+GroupRouter.post("/:chatId/seen", protect, markGroupSeen);
 GroupRouter.post("/messages/send", protect, sendGroupMessage);
 GroupRouter.put("/messages/:messageId", protect, editGroupMessage);
 GroupRouter.patch("/messages/like/:messageId", protect, toggleLikeGroupMessage);

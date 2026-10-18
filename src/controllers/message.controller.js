@@ -1023,3 +1023,30 @@ export const clearConversationWallpaper = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
+// ── Mark a 1:1 chat as read (called while the chat window is open) ──────
+export const markChatSeen = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const userId = req.user._id;
+
+    await Conversation.updateOne(
+      { chatId, members: userId },
+      { $set: { [`unreadCounts.${userId.toString()}`]: 0 } }
+    );
+
+    const mySocketId = onlineUsers.get(userId.toString());
+    if (mySocketId) {
+      const [unreadCount, requestCount] = await Promise.all([
+        getUnreadCountForUser(userId),
+        getRequestCountForUser(userId),
+      ]);
+      getIO().to(mySocketId).emit("inboxCounts", { unreadCount, requestCount });
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
