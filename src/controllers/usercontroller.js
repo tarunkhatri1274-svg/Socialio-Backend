@@ -40,11 +40,16 @@ const extractPublicId = (url) => {
 // ── Helper: destroy a Cloudinary asset safely ─────────────────────────────
 const destroyCloudinary = async (url, resourceType = "image") => {
   const publicId = extractPublicId(url);
-  if (!publicId) return;
+  if (!publicId) return console.warn("No publicId for", url);
   try {
-    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+    // raw assets (pdf, docs) keep their extension in the public_id
+    const id = resourceType === "raw"
+      ? url.split("/upload/")[1].replace(/^v\d+\//, "")
+      : publicId;
+    const r = await cloudinary.uploader.destroy(id, { resource_type: resourceType, invalidate: true });
+    if (r.result !== "ok") console.warn("Cloudinary destroy:", r.result, id, resourceType);
   } catch (e) {
-    console.log("Cloudinary destroy error:", e.message);
+    console.error("Cloudinary destroy error:", e.message);
   }
 };
 
@@ -466,7 +471,7 @@ export const deleteAccount = async (req, res) => {
     // ── 3. Stories ───────────────────────────────────────────────────
     const stories = await Story.find({ author: userId });
     for (const story of stories) {
-      if (story.media?.url) {
+       if (story.media?.url && !story.repostOf) { 
         const resourceType = story.media.type === "video" ? "video" : "image";
         await destroyCloudinary(story.media.url, resourceType);
       }
@@ -502,7 +507,8 @@ export const deleteAccount = async (req, res) => {
     for (const group of myGroups) {
       const member = group.members.find((m) => m.user.toString() === userId.toString());
       if (!member) continue;
-
+const myWp = group.wallpapers?.get(userId.toString());
+if (myWp?.type === "image" && myWp.value) await destroyCloudinary(myWp.value, "image");
       const wasAcceptedAdmin = member.status === "accepted" && member.role === "admin";
       member.status = "declined";
       member.leftAt = new Date();
@@ -529,6 +535,10 @@ export const deleteAccount = async (req, res) => {
         const groupMessages = await Message.find({ chatId: group.chatId });
         for (const gm of groupMessages) await destroyMessageMedia(gm.media);
         await Message.deleteMany({ chatId: group.chatId });
+        for (const [, w] of group.wallpapers || []) {
+  if (w?.type === "image" && w.value) await destroyCloudinary(w.value, "image");
+}
+if (group.avatar) await destroyCloudinary(group.avatar, "image");
         await Group.deleteOne({ _id: group._id });
       } else {
         await group.save();
@@ -569,6 +579,17 @@ export const deleteAccount = async (req, res) => {
     await Message.deleteMany({ $or: [{ user: userId }, { to: userId }] });
 
     // ── 8. Conversations / notifications ──────────────────────────────
+
+    const myConvos = await Conversation.find({ members: userId });
+for (const c of myConvos) {
+  // this convo gets deleted outright when 2 or fewer members exist,
+  // so every wallpaper in it would be orphaned
+  const wipeAll = c.members.length <= 2;
+  for (const [uid, w] of c.wallpapers || []) {
+    if (!wipeAll && uid !== userId.toString()) continue;
+    if (w?.type === "image" && w.value) await destroyCloudinary(w.value, "image");
+  }
+}
     await Conversation.updateMany(
       { members: userId },
       { $pull: { members: userId, clearedFor: userId } }
