@@ -67,13 +67,13 @@ const postSchema = new mongoose.Schema(
     text: { type: String, maxlength: 2000, default: "" },
     caption: { type: String, maxlength: 1000, default: "" },
 
-    media: [
+      media: [
       {
         url: { type: String },
         type: { type: String, enum: ["image", "video"] },
+        caption: { type: String, maxlength: 1000 }, // per-image description
       },
     ],
-
     tags: [{ type: String, lowercase: true, trim: true }],
     mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],

@@ -144,8 +144,13 @@ export const AddMediaPost = async (req, res) => {
     // /auth/upload-media route (uploadPostMedia below), which already
     // ran enforcePostMediaLimits on the file server-side before handing
     // back a URL — so no separate size check is needed for this path.
-    else if (bodyMedia && Array.isArray(bodyMedia) && bodyMedia.length > 0) {
-      media = bodyMedia;
+       else if (bodyMedia && Array.isArray(bodyMedia) && bodyMedia.length > 0) {
+      media = bodyMedia.map((m) => ({
+        url: m.url,
+        type: m.type,
+        // only store a caption if the client actually sent one
+        ...(typeof m.caption === "string" ? { caption: m.caption.trim() } : {}),
+      }));
     }
     // ← case 3: single url sent from frontend (old flow)
     else if (url) {

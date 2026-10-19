@@ -12,8 +12,10 @@ const NotificationRouter = express.Router();
 
 NotificationRouter.get("/", protect, getNotifications);
 NotificationRouter.get("/unread-count", protect, getUnreadNotificationCount);
-NotificationRouter.patch("/:notificationId/read", protect, markNotificationRead);
+// read-all must stay ABOVE the /:notificationId routes so it is never
+// treated as an id.
 NotificationRouter.patch("/read-all", protect, markAllNotificationsRead);
+NotificationRouter.patch("/:notificationId/read", protect, markNotificationRead);
 NotificationRouter.delete("/:notificationId", protect, deleteNotification);
 
 export default NotificationRouter;

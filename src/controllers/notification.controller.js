@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Notification from "../models/notifications/notification.model.js";
 
 // ================= GET NOTIFICATIONS (paginated, newest first) =================
@@ -50,6 +51,12 @@ export const markNotificationRead = async (req, res) => {
     const userId = req.user._id || req.user.id;
     const { notificationId } = req.params;
 
+    // A client-side placeholder id (e.g. "temp-123...") would otherwise
+    // throw a CastError and come back as a 500.
+    if (!mongoose.isValidObjectId(notificationId)) {
+      return res.status(400).json({ success: false, message: "Invalid notification id" });
+    }
+
     const notification = await Notification.findOneAndUpdate(
       { _id: notificationId, recipient: userId },
       { $set: { isRead: true } },
@@ -80,7 +87,7 @@ export const markAllNotificationsRead = async (req, res) => {
       { $set: { isRead: true } }
     );
 
-    res.status(200).json({ success: true, message: "All notifications marked as read" });
+    res.status(200).json({ success: true, unreadCount: 0, message: "All notifications marked as read" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
