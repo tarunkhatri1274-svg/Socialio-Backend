@@ -4,7 +4,7 @@ import Message from "../models/messages/message.model.js";
 import Conversation from "../models/messages/conversation.model.js";
 import { createNotification } from "./notification.helper.js";
 import { getIO, onlineUsers, isLiveRoomActive } from "../config/sockets.js";
-import { destroyCloudinaryAssetById, extractCloudinaryMeta } from "../jobs/expire.media.js";
+import { deleteFileById, extractFileMeta } from "../config/gridfs.js";
 import { isBlockedEitherWay } from "../utils/blockCheck.js";
 import mongoose from "mongoose";
 
@@ -180,11 +180,11 @@ export const addStory = async (req, res) => {
       return res.status(400).json({ success: false, message: "File and type are required" });
     }
 
-    const meta = extractCloudinaryMeta(req.file);
+    const meta = extractFileMeta(req.file);
 
     const limit = storyType === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
     if (meta.bytes > limit) {
-      await destroyCloudinaryAssetById(meta.publicId, meta.resourceType);
+      await deleteFileById(meta.publicId);
       return res.status(400).json({
         success: false,
         message:
@@ -361,7 +361,7 @@ export const endLiveStory = async (req, res) => {
     }
 
     if (story.media?.publicId) {
-      await destroyCloudinaryAssetById(story.media.publicId, story.media.resourceType);
+      await deleteFileById(story.media.publicId);
     }
 
     await Story.findByIdAndDelete(storyId);
@@ -656,7 +656,7 @@ export const reactToStory = async (req, res) => {
   }
 };
 
-// ================= DELETE STORY (also wipes Cloudinary asset) =============
+// ================= DELETE STORY (also wipes stored file) =============
 export const deleteStory = async (req, res) => {
   try {
     const { storyId } = req.params;
@@ -667,11 +667,11 @@ export const deleteStory = async (req, res) => {
       return res.status(403).json({ success: false, message: "You can delete only your own story" });
     }
 
-    // ── A reposted story doesn't own its Cloudinary asset (the original
+    // ── A reposted story doesn't own its stored file (the original
     // story does) — never destroy it here, or the original owner's
     // still-live story loses its media out from under them.
     if (story.media?.publicId && !story.repostOf) {
-      await destroyCloudinaryAssetById(story.media.publicId, story.media.resourceType);
+      await deleteFileById(story.media.publicId);
     }
 
     await Story.findByIdAndDelete(storyId);
@@ -690,7 +690,7 @@ export const deleteStory = async (req, res) => {
 
 // ================= ADD TO YOUR STORY (repost) =============================
 // Called from the mention message's "Add to Your Story" button. Reuses
-// the ORIGINAL story's Cloudinary asset (no re-upload) — see the
+// the ORIGINAL story's stored file (no re-upload) — see the
 // `repostOf` guard in deleteStory above and jobs/expire.stories.js.
 export const repostStoryToMyStory = async (req, res) => {
   try {

@@ -24,7 +24,7 @@ import {
   voteGroupPoll,
   markGroupSeen,
 } from "../controllers/group.controller.js";
-import { uploadWallpaper, handleUploadError } from "../config/cloudinary.js";
+import { uploadWallpaper, handleUploadError } from "../config/gridfs.js";
 
 const GroupRouter = express.Router();
 

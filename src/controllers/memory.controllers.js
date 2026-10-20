@@ -1,7 +1,7 @@
 import MemoryGroup from "../models/memory/memoryGroup.modal.js";
 import MemoryItem from "../models/memory/memoryItem.modal.js";
 import User from "../models/user/user.model.js";
-import cloudinary from "../config/cloudinary.js";
+import { deleteFileByUrl } from "../config/gridfs.js";
 import { getIO } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
 import { isBlockedEitherWay } from "../utils/blockCheck.js";
@@ -39,32 +39,8 @@ export const canAccessMemoryItem = async (item, viewerId) => {
   return true;
 };
 
-const extractPublicId = (url) => {
-  if (!url) return null;
-  try {
-    const parts = url.split("/");
-    const uploadIdx = parts.indexOf("upload");
-    if (uploadIdx === -1) return null;
-    const afterUpload = parts.slice(uploadIdx + 1);
-    if (afterUpload[0]?.startsWith("v") && !isNaN(afterUpload[0].slice(1))) {
-      afterUpload.shift();
-    }
-    return afterUpload.join("/").replace(/\.[^/.]+$/, "");
-  } catch {
-    return null;
-  }
-};
-
 const destroyMemoryMedia = async (media) => {
-  const publicId = extractPublicId(media?.url);
-  if (!publicId) return;
-  try {
-    await cloudinary.uploader.destroy(publicId, {
-      resource_type: media.type === "video" ? "video" : "image",
-    });
-  } catch (e) {
-    console.error("Cloudinary delete failed:", e.message);
-  }
+  if (media?.url) await deleteFileByUrl(media.url);
 };
 
 // Multipart/FormData bodies send booleans as the STRINGS "true"/"false",

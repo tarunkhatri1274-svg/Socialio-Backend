@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import Message from "../models/messages/message.model.js";
 import Group from "../models/messages/group.model.js";
-import cloudinary from "../config/cloudinary.js";
+import { deleteFileByUrl, deleteFileById } from "../config/gridfs.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 
 const MEDIA_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
@@ -28,50 +28,21 @@ async function getGroupMemberIds(chatId) {
   return ids;
 }
 
-export async function destroyCloudinaryAsset(media) {
+export async function destroyMediaAsset(media) {
   if (!media?.url) return;
-
-  const urlParts = media.url.split("/");
-  const uploadIndex = urlParts.indexOf("upload");
-  if (uploadIndex === -1) return;
-
-  const publicIdWithExtension = urlParts.slice(uploadIndex + 2).join("/");
-  const publicId = publicIdWithExtension.replace(/\.[^/.]+$/, "");
-
-  const mediaType = media.mediaType;
-  const resourceType =
-    mediaType === "image" ? "image" :
-    mediaType === "video" ? "video" :
-    mediaType === "audio" ? "video" :
-    "raw";
-
-  await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+  await deleteFileByUrl(media.url);
 }
 
-export async function destroyCloudinaryAssetById(publicId, resourceType = "image") {
+// publicId = the GridFS file id stored on Story.media.publicId.
+export async function destroyMediaAssetById(publicId) {
   if (!publicId) return { skipped: true };
   try {
-    return await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+    const ok = await deleteFileById(publicId);
+    return { result: ok ? "ok" : "not found" };
   } catch (err) {
-    console.error(`[expireMedia] Cloudinary destroy failed for ${publicId}:`, err.message);
+    console.error(`[expireMedia] file delete failed for ${publicId}:`, err.message);
     return { error: err.message };
   }
-}
-
-export function extractCloudinaryMeta(file) {
-  if (!file) return null;
-  const resourceType = file.mimetype?.startsWith("video")
-    ? "video"
-    : file.mimetype?.startsWith("image")
-    ? "image"
-    : "raw";
-
-  return {
-    url: file.path,
-    publicId: file.filename || file.public_id || "",
-    resourceType,
-    bytes: file.size || 0,
-  };
 }
 
 function safeNotify(userId, event, payload) {
@@ -123,7 +94,7 @@ export async function expireOldMedia() {
 
     for (const msg of expiredMessages) {
       try {
-        await destroyCloudinaryAsset(msg.media);
+        await destroyMediaAsset(msg.media);
 
         msg.media = undefined;
         msg.mediaExpired = true;

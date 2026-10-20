@@ -5,7 +5,7 @@ import User from "../models/user/user.model.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
 import { sendPushToUser } from "../utils/pushNotification.js";
-import cloudinary from "../config/cloudinary.js";
+import { deleteFileByUrl } from "../config/gridfs.js";
 
 const GROUP_PREFIX = "group_";
 
@@ -36,26 +36,13 @@ const pushGroupCounts = async (userId) => {
   io.to(sid).emit("groupInboxCounts", { groupRequestCount: requestCount });
 };
 
-// ── Cloudinary cleanup — same shape as message.controllers.js's version ──
-async function destroyCloudinaryAsset(media) {
+// ── Stored-file cleanup (GridFS) ────────────────────────────────────────
+async function destroyMediaAsset(media) {
   try {
     if (!media?.url) return;
-    const urlParts = media.url.split("/");
-    const uploadIndex = urlParts.indexOf("upload");
-    if (uploadIndex === -1) return;
-    const publicIdWithExtension = urlParts.slice(uploadIndex + 2).join("/");
-    const publicId = publicIdWithExtension.replace(/\.[^/.]+$/, "");
-
-    const mediaType = media.mediaType;
-    const resourceType =
-      mediaType === "image" ? "image" :
-      mediaType === "video" ? "video" :
-      mediaType === "audio" ? "video" :
-      "raw";
-
-    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+    await deleteFileByUrl(media.url);
   } catch (err) {
-    console.error("Cloudinary delete failed (group):", err.message);
+    console.error("File delete failed:", err.message);
   }
 }
 
@@ -368,7 +355,7 @@ export const exitGroup = async (req, res) => {
     if (!stillHasMembers) {
       const remainingMessages = await Message.find({ chatId });
       const withMedia = remainingMessages.filter((m) => m.media?.url);
-      await Promise.all(withMedia.map((m) => destroyCloudinaryAsset(m.media)));
+      await Promise.all(withMedia.map((m) => destroyMediaAsset(m.media)));
       await Message.deleteMany({ chatId });
       await Group.deleteOne({ _id: group._id });
     }
@@ -792,7 +779,7 @@ export const deleteGroupMessage = async (req, res) => {
       }
 
       if (message.media?.url) {
-        await destroyCloudinaryAsset(message.media);
+        await destroyMediaAsset(message.media);
       }
 
       await Message.deleteOne({ _id: messageId });
@@ -818,7 +805,7 @@ export const deleteGroupMessage = async (req, res) => {
       message.deletedFor.some((d) => d.toString() === id)
     );
     if (allDeleted) {
-      if (message.media?.url) await destroyCloudinaryAsset(message.media);
+      if (message.media?.url) await destroyMediaAsset(message.media);
       await Message.deleteOne({ _id: message._id });
     }
 
@@ -833,7 +820,7 @@ export const deleteGroupMessage = async (req, res) => {
 // Group chat wallpaper — per-user, per-group. Same pattern as the 1:1
 // version in message.controllers.js: stored on the Group doc's
 // `wallpapers` map (see group.model.js), keyed by userId, instead of only
-// in the app's AsyncStorage. The old Cloudinary photo is destroyed
+// in the app's AsyncStorage. The old MongoDB (GridFS) photo is destroyed
 // straight from its URL when it's replaced or cleared.
 // ─────────────────────────────────────────────────────────────────────────
 export const getGroupWallpaper = async (req, res) => {
@@ -876,7 +863,7 @@ export const setGroupWallpaper = async (req, res) => {
     await group.save();
 
     if (previous?.type === "image" && previous.value && previous.value !== wallpaper.value) {
-      await destroyCloudinaryAsset({ url: previous.value, mediaType: "image" });
+      await destroyMediaAsset({ url: previous.value, mediaType: "image" });
     }
 
     res.status(200).json({ success: true, wallpaper });
@@ -898,7 +885,7 @@ export const clearGroupWallpaper = async (req, res) => {
     await group.save();
 
     if (previous?.type === "image" && previous.value) {
-      await destroyCloudinaryAsset({ url: previous.value, mediaType: "image" });
+      await destroyMediaAsset({ url: previous.value, mediaType: "image" });
     }
 
     res.status(200).json({ success: true });

@@ -1,5 +1,5 @@
 import "./src/config/env.js";
-import "./src/config/cloudinary.js";
+
 import "./src/config/firebaseAdmin.js";
 import env from "./src/services/simpleENV.js";
 import express from "express";
@@ -27,6 +27,7 @@ import GroupRouter from "./src/routes/grouproutes.js";
 import { startNotificationExpiryJob } from "./src/jobs/expire.notification.js"; // ← added
 import MemoryRouter from "./src/routes/memory.routes.js";
 import MuteRouter from "./src/routes/mute.routes.js"; // ← added
+import FileRouter from "./src/routes/file.routes.js";
 const PORT=process.env.PORT
 const app        = express();
 const httpServer = createServer(app);
@@ -96,6 +97,7 @@ app.use("/api/auth/notifications/settings", NotificationSettingsRouter);
 app.use("/api/groups", GroupRouter);
 app.use("/api/memories", MemoryRouter); // ← added
 app.use("/api/mute", MuteRouter); // ← added
+app.use("/files", FileRouter); // public, no auth
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
   res.send("Backend working");

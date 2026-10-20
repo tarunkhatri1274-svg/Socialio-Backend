@@ -17,7 +17,7 @@ import {
   repostStoryToMyStory,
 } from "../controllers/story.controllers.js";
 import { protect } from "../middlewares/auth.middleware.js";
-import { uploadStory, handleUploadError } from "../config/cloudinary.js";
+import { uploadStory, handleUploadError } from "../config/gridfs.js";
 
 const Storyrouter = express.Router();
 

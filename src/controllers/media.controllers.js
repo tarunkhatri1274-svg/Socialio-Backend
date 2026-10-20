@@ -1,11 +1,9 @@
 import Post from "../models/post/post.model.js";
 import User from "../models/user/user.model.js";
 import Notification from "../models/notifications/notification.model.js";
-import cloudinary from "../config/cloudinary.js";
-import { MAX_POST_IMAGE_BYTES, MAX_POST_VIDEO_BYTES } from "../config/cloudinary.js";
+import { MAX_POST_IMAGE_BYTES, MAX_POST_VIDEO_BYTES, deleteFileByUrl, deleteFileById, extractFileMeta } from "../config/gridfs.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
-import { destroyCloudinaryAssetById, extractCloudinaryMeta } from "../jobs/expire.media.js";
 
 // ── Can `viewerId` see this post, given it's a collaboration and the
 // viewer is looking at it via COLLABORATOR B's profile (not the
@@ -40,7 +38,7 @@ export const canViewCollabPost = async (post, viewerId, viewingOnProfileOf) => {
 };
 
 // ── Validate every uploaded file against its type's size limit. If ANY
-// file in the batch is oversized, delete ALL of them from Cloudinary
+// file in the batch is oversized, delete ALL of them from MongoDB (GridFS)
 // (not just the offending one) and reject the whole request.
 const enforcePostMediaLimits = async (files) => {
   if (!files || files.length === 0) return { ok: true };
@@ -57,9 +55,9 @@ const enforcePostMediaLimits = async (files) => {
   if (violations.length > 0) {
     await Promise.all(
       files.map(async (file) => {
-        const meta = extractCloudinaryMeta(file);
+        const meta = extractFileMeta(file);
         if (meta?.publicId) {
-          await destroyCloudinaryAssetById(meta.publicId, meta.resourceType);
+          await deleteFileById(meta.publicId);
         }
       })
     );
@@ -84,13 +82,13 @@ const enforcePostMediaLimits = async (files) => {
 // ================= UPLOAD SINGLE POST MEDIA FILE =================
 // Dedicated upload endpoint for the post-creation screens (CreateImagePost,
 // CreateTextPost, VideoPostFormat) to call BEFORE creating the post — they
-// upload one file, get back a Cloudinary URL, then POST that URL as real
+// upload one file, get back a file URL, then POST that URL as real
 // JSON (with real booleans/arrays) to AddMediaPost/AddTextPost.
 //
 // This exists so those screens don't have to borrow the chat-attachment
 // route (POST /messages/upload) — that route's size limits are tuned for
 // DM attachments (25MB video), not posts. This one runs through the same
-// `uploadPost` multer/Cloudinary config already used by /add-media-post
+// `uploadPost` multer/MongoDB (GridFS) config already used by /add-media-post
 // etc, so the size rules actually match (10MB image / 20MB video via
 // enforcePostMediaLimits below).
 export const uploadPostMedia = async (req, res) => {
@@ -476,7 +474,7 @@ export const AddTextPost = async (
           .map((id) => ({ user: id, status: "pending" }))
       : [];
 
-    // NOTE: `media` here is pre-uploaded Cloudinary URLs from the
+    // NOTE: `media` here is pre-uploaded file URLs from the
     // frontend (no req.files), so there's no raw file size available to
     // check server-side. If you want a hard server-side guarantee for
     // this path too, have the frontend send { url, type, bytes } per
@@ -590,27 +588,11 @@ export const deletePost = async (req, res) => {
       });
     }
 
-    // ================= DELETE MEDIA FROM CLOUDINARY =================
+    // ================= DELETE MEDIA FILES (GridFS) =================
     if (post.media && post.media.length > 0) {
-      const deletePromises = post.media.map(async (mediaItem) => {
-        try {
-          const urlParts = mediaItem.url.split("/");
-          const uploadIndex = urlParts.indexOf("upload");
-
-          const publicIdWithExtension = urlParts
-            .slice(uploadIndex + 2)
-            .join("/");
-
-          const publicId = publicIdWithExtension.replace(/\.[^/.]+$/, "");
-
-          const resourceType = mediaItem.type === "video" ? "video" : "image";
-
-          await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-          console.log(`Deleted from Cloudinary: ${publicId}`);
-        } catch (err) {
-          console.error("Cloudinary delete failed for:", mediaItem.url, err.message);
-        }
-      });
+      const deletePromises = post.media.map((mediaItem) =>
+        mediaItem?.url ? deleteFileByUrl(mediaItem.url) : null
+      );
 
       await Promise.all(deletePromises);
     }

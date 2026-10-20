@@ -1,5 +1,5 @@
 import Story from "../models/story/story.model.js";
-import { destroyCloudinaryAssetById } from "./expire.media.js";
+import { destroyMediaAssetById } from "./expire.media.js";
 import { getIO } from "../config/sockets.js";
 
 const CHECK_INTERVAL_MS = 30 * 1000;
@@ -26,11 +26,11 @@ const cleanupExpiredStories = async () => {
 
     for (const story of expired) {
       try {
-        // ── Reposted stories share the original's Cloudinary asset and
+        // ── Reposted stories share the original's stored file and
         // never own its lifecycle — only destroy when this story IS the
         // original (repostOf is null).
         if (story.media?.publicId && !story.repostOf) {
-          const result = await destroyCloudinaryAssetById(story.media.publicId, story.media.resourceType);
+          const result = await destroyMediaAssetById(story.media.publicId);
           if (result?.error) {
             skipped++;
             continue;

@@ -23,7 +23,7 @@ import {
   likeMemoryReply,
 } from "../controllers/memory.controllers.js";
 import { protect } from "../middlewares/auth.middleware.js";
-import { uploadPost, handleUploadError } from "../config/cloudinary.js";
+import { uploadPost, handleUploadError } from "../config/gridfs.js";
 
 const MemoryRouter = express.Router();
 

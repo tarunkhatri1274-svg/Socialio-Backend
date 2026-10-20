@@ -14,62 +14,18 @@ import { OAuth2Client } from "google-auth-library";
 import { sendOtpEmail, generateOtp } from "../utils/sendemail.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { canViewCollabPost } from "./media.controllers.js";
-import cloudinary from "../config/cloudinary.js";
+import { deleteFileByUrl } from "../config/gridfs.js";
 import jwt from "jsonwebtoken";
 import env from "../services/simpleENV.js";
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// ── Helper: extract Cloudinary public_id from a URL ───────────────────────
-const extractPublicId = (url) => {
-  if (!url) return null;
-  try {
-    const parts = url.split("/");
-    const uploadIdx = parts.indexOf("upload");
-    if (uploadIdx === -1) return null;
-    const afterUpload = parts.slice(uploadIdx + 1);
-    if (afterUpload[0]?.startsWith("v") && !isNaN(afterUpload[0].slice(1))) {
-      afterUpload.shift();
-    }
-    const withExt = afterUpload.join("/");
-    return withExt.replace(/\.[^/.]+$/, "");
-  } catch {
-    return null;
-  }
-};
-
-// ── Helper: destroy a Cloudinary asset safely ─────────────────────────────
-const destroyCloudinary = async (url, resourceType = "image") => {
-  const publicId = extractPublicId(url);
-  if (!publicId) return console.warn("No publicId for", url);
-  try {
-    // raw assets (pdf, docs) keep their extension in the public_id
-    const id = resourceType === "raw"
-      ? url.split("/upload/")[1].replace(/^v\d+\//, "")
-      : publicId;
-    const r = await cloudinary.uploader.destroy(id, { resource_type: resourceType, invalidate: true });
-    if (r.result !== "ok") console.warn("Cloudinary destroy:", r.result, id, resourceType);
-  } catch (e) {
-    console.error("Cloudinary destroy error:", e.message);
-  }
-};
-
-// ── Helper: destroy a Message.media asset (uses the mediaType enum
-// image/video/audio/file, same mapping used everywhere else in the app
-// — audio is stored as a Cloudinary "video" resource, "file" as "raw") ──
+// ── Helpers: delete stored files (MongoDB GridFS). deleteFileByUrl never
+// throws and ignores URLs that aren't /files/<id>. ─────────────────────────
 const destroyMessageMedia = async (media) => {
-  if (!media?.url) return;
-  const resourceType =
-    media.mediaType === "video" ? "video" :
-    media.mediaType === "audio" ? "video" :
-    media.mediaType === "file"  ? "raw" :
-    "image";
-  await destroyCloudinary(media.url, resourceType);
+  if (media?.url) await deleteFileByUrl(media.url);
 };
-
-// ── Helper: destroy a MemoryItem.media asset (only image/video) ──────────
 const destroyMemoryItemMedia = async (media) => {
-  if (!media?.url) return;
-  await destroyCloudinary(media.url, media.type === "video" ? "video" : "image");
+  if (media?.url) await deleteFileByUrl(media.url);
 };
 
 export const sendOtp = async (req, res) => {
@@ -331,7 +287,7 @@ export const updateProfile = async (req, res) => {
     if (req.files?.profilePic) {
       const newUrl = req.files.profilePic[0].path;
       if (currentUser.profilePic && currentUser.profilePic !== newUrl) {
-        await destroyCloudinary(currentUser.profilePic, "image");
+        await deleteFileByUrl(currentUser.profilePic);
       }
       updateData.profilePic = newUrl;
     }
@@ -339,7 +295,7 @@ export const updateProfile = async (req, res) => {
     if (req.files?.coverPic) {
       const newUrl = req.files.coverPic[0].path;
       if (currentUser.coverPic && currentUser.coverPic !== newUrl) {
-        await destroyCloudinary(currentUser.coverPic, "image");
+        await deleteFileByUrl(currentUser.coverPic);
       }
       updateData.coverPic = newUrl;
     }
@@ -384,7 +340,7 @@ export const changePassword = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════
 // DELETE ACCOUNT — full cascade
 //
-// Order of cleanup (each step destroys its own Cloudinary assets BEFORE
+// Order of cleanup (each step destroys its own stored files BEFORE
 // deleting the owning Mongo docs, so nothing is ever orphaned in storage
 // even if the process crashes mid-way through a later step):
 //   1. Posts (+ their media)
@@ -426,8 +382,7 @@ export const deleteAccount = async (req, res) => {
     for (const post of posts) {
       for (const media of post.media || []) {
         if (media.url) {
-          const resourceType = media.type === "video" ? "video" : "image";
-          await destroyCloudinary(media.url, resourceType);
+          await deleteFileByUrl(media.url);
         }
       }
     }
@@ -471,9 +426,8 @@ export const deleteAccount = async (req, res) => {
     // ── 3. Stories ───────────────────────────────────────────────────
     const stories = await Story.find({ author: userId });
     for (const story of stories) {
-       if (story.media?.url && !story.repostOf) { 
-        const resourceType = story.media.type === "video" ? "video" : "image";
-        await destroyCloudinary(story.media.url, resourceType);
+      if (story.media?.url) {
+        await deleteFileByUrl(story.media.url);
       }
     }
     await Story.deleteMany({ author: userId });
@@ -491,8 +445,8 @@ export const deleteAccount = async (req, res) => {
     );
 
     // ── 4. Profile / cover pics ──────────────────────────────────────
-    if (user.profilePic) await destroyCloudinary(user.profilePic, "image");
-    if (user.coverPic)   await destroyCloudinary(user.coverPic,   "image");
+    if (user.profilePic) await deleteFileByUrl(user.profilePic);
+    if (user.coverPic)   await deleteFileByUrl(user.coverPic);
 
     // ── 5. Memories (Highlights) — was completely missing before ─────
     const memoryItems = await MemoryItem.find({ author: userId });
@@ -507,8 +461,7 @@ export const deleteAccount = async (req, res) => {
     for (const group of myGroups) {
       const member = group.members.find((m) => m.user.toString() === userId.toString());
       if (!member) continue;
-const myWp = group.wallpapers?.get(userId.toString());
-if (myWp?.type === "image" && myWp.value) await destroyCloudinary(myWp.value, "image");
+
       const wasAcceptedAdmin = member.status === "accepted" && member.role === "admin";
       member.status = "declined";
       member.leftAt = new Date();
@@ -531,14 +484,10 @@ if (myWp?.type === "image" && myWp.value) await destroyCloudinary(myWp.value, "i
 
       if (!stillHasMembers) {
         // No accepted members left — safe to fully wipe the group,
-        // its messages, and their Cloudinary media.
+        // its messages, and their stored media.
         const groupMessages = await Message.find({ chatId: group.chatId });
         for (const gm of groupMessages) await destroyMessageMedia(gm.media);
         await Message.deleteMany({ chatId: group.chatId });
-        for (const [, w] of group.wallpapers || []) {
-  if (w?.type === "image" && w.value) await destroyCloudinary(w.value, "image");
-}
-if (group.avatar) await destroyCloudinary(group.avatar, "image");
         await Group.deleteOne({ _id: group._id });
       } else {
         await group.save();
@@ -579,17 +528,6 @@ if (group.avatar) await destroyCloudinary(group.avatar, "image");
     await Message.deleteMany({ $or: [{ user: userId }, { to: userId }] });
 
     // ── 8. Conversations / notifications ──────────────────────────────
-
-    const myConvos = await Conversation.find({ members: userId });
-for (const c of myConvos) {
-  // this convo gets deleted outright when 2 or fewer members exist,
-  // so every wallpaper in it would be orphaned
-  const wipeAll = c.members.length <= 2;
-  for (const [uid, w] of c.wallpapers || []) {
-    if (!wipeAll && uid !== userId.toString()) continue;
-    if (w?.type === "image" && w.value) await destroyCloudinary(w.value, "image");
-  }
-}
     await Conversation.updateMany(
       { members: userId },
       { $pull: { members: userId, clearedFor: userId } }

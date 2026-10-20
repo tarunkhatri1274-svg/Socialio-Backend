@@ -4,12 +4,13 @@ import Conversation from '../models/messages/conversation.model.js';
 import Group from '../models/messages/group.model.js';
 import { getIO, onlineUsers } from '../config/sockets.js';
 
-import cloudinary, {
+import {
   MAX_MESSAGE_IMAGE_BYTES,
   MAX_MESSAGE_AUDIO_BYTES,
   MAX_MESSAGE_VIDEO_BYTES,
   MAX_MESSAGE_FILE_BYTES,
-} from '../config/cloudinary.js';
+  deleteFileByUrl,
+} from '../config/gridfs.js';
 import { createNotification } from './notification.helper.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -251,7 +252,7 @@ export const clearChat = async (req, res) => {
 
   // ── If every member of this conversation has now deleted-for-me all
   // messages, there's no one left who can still see them — safe to
-  // physically purge (Cloudinary + Mongo) instead of leaking storage.
+  // physically purge (MongoDB (GridFS) + Mongo) instead of leaking storage.
   if (convo) {
     const memberIds = convo.members.map(id => id.toString());
     const fullyDeleted = await Message.find({
@@ -385,9 +386,9 @@ export const deleteMessage = async (req, res) => {
         return res.status(403).json({ message: "You can only delete your own messages for everyone" });
       }
 
-      // Wipe media from Cloudinary too
+      // Wipe media from MongoDB (GridFS) too
       if (message.media?.url) {
-        await destroyCloudinaryAsset(message.media);
+        await destroyMediaAsset(message.media);
       }
 
       await Message.deleteOne({ _id: messageId });
@@ -431,32 +432,21 @@ res.status(200).json({ message: "Message deleted for you", messageId });
   }
 };
 
-// ── Cloudinary cleanup helper ───────────────────────────────────────────────
-async function destroyCloudinaryAsset(media) {
+// ── Stored-file cleanup helper (GridFS) ─────────────────────────────────
+async function destroyMediaAsset(media) {
   try {
-    const urlParts = media.url.split("/");
-    const uploadIndex = urlParts.indexOf("upload");
-    const publicIdWithExtension = urlParts.slice(uploadIndex + 2).join("/");
-    const publicId = publicIdWithExtension.replace(/\.[^/.]+$/, "");
-
-    const mediaType = media.mediaType;
-    const resourceType =
-      mediaType === "image" ? "image" :
-      mediaType === "video" ? "video" :
-      mediaType === "audio" ? "video" :
-      "raw";
-
-    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+    if (!media?.url) return;
+    await deleteFileByUrl(media.url);
   } catch (err) {
-    console.error("Cloudinary delete failed:", err.message);
+    console.error("File delete failed:", err.message);
   }
 }
-// ── Hard-delete messages: destroy Cloudinary assets first, then remove
+// ── Hard-delete messages: destroy stored files first, then remove
 // the Mongo docs. Call this ONLY for messages that are safe to fully
 // purge (e.g. every member has deleted/cleared them).
 async function purgeMessages(messages) {
   const withMedia = messages.filter(m => m.media?.url);
-  await Promise.all(withMedia.map(m => destroyCloudinaryAsset(m.media)));
+  await Promise.all(withMedia.map(m => destroyMediaAsset(m.media)));
   const ids = messages.map(m => m._id);
   if (ids.length) await Message.deleteMany({ _id: { $in: ids } });
 }
@@ -465,10 +455,10 @@ async function purgeMessages(messages) {
 // Upload a chat attachment (image / video / audio / file). Same pattern
 // as enforcePostMediaLimits in media.controllers.js and addStory in
 // story.controllers.js: multer's `uploadMessage` config (see
-// config/cloudinary.js) only enforces a single ceiling at the transport
+// config/gridfs.js) only enforces a single ceiling at the transport
 // layer (25MB, the video limit) because it can't vary by mimetype on its
 // own. This handler enforces the PRECISE per-type limit afterward, and
-// — critically — deletes the just-uploaded Cloudinary asset immediately
+// — critically — deletes the just-uploaded stored file immediately
 // if it's oversized for its actual type, so nothing oversized lingers in
 // storage just because it happened to be under the shared ceiling.
 // ─────────────────────────────────────────────────────────────────────────
@@ -484,7 +474,7 @@ export const uploadMessageMedia = async (req, res) => {
       MAX_MESSAGE_FILE_BYTES;
 
     if (req.file.size > limit) {
-      await destroyCloudinaryAsset({ url: req.file.path, mediaType });
+      await destroyMediaAsset({ url: req.file.path, mediaType });
       const limitMb = Math.round(limit / (1024 * 1024));
       return res.status(400).json({
         success: false,
@@ -989,8 +979,8 @@ export const setConversationWallpaper = async (req, res) => {
     console.log("[Wallpaper] 6. saved to DB");
 
     if (previous?.type === "image" && previous.value && previous.value !== wallpaper.value) {
-      console.log("[Wallpaper] 7. destroying old cloudinary asset:", previous.value);
-      await destroyCloudinaryAsset({ url: previous.value, mediaType: "image" });
+      console.log("[Wallpaper] 7. destroying old gridfs asset:", previous.value);
+      await destroyMediaAsset({ url: previous.value, mediaType: "image" });
       console.log("[Wallpaper] 8. old asset destroyed");
     }
 
@@ -1015,7 +1005,7 @@ export const clearConversationWallpaper = async (req, res) => {
     await convo.save();
 
     if (previous?.type === "image" && previous.value) {
-      await destroyCloudinaryAsset({ url: previous.value, mediaType: "image" });
+      await destroyMediaAsset({ url: previous.value, mediaType: "image" });
     }
 
     res.status(200).json({ success: true });

@@ -6,14 +6,14 @@ import { getIO, onlineUsers } from "../config/sockets.js";
 // Activity/notification documents are hard-purged 7 days after creation.
 //
 // Unlike message media (expireMedia.js), a Notification doc does NOT own
-// any Cloudinary asset itself — it only references a postId/commentId/
+// any stored file itself — it only references a postId/commentId/
 // replyId that belongs to a Post/Message document. Those parent documents
 // already manage their own media lifecycle independently:
 //   - Post media is destroyed when the post itself is deleted, or when the
 //     author's account is deleted (see deleteAccount in user.controllers.js)
 //   - Message media is destroyed by expireOldMedia() / deleteMessage()
 // So this job only ever deletes the notification row — never touches
-// Cloudinary — to avoid double-destroying (or wrongly destroying) an
+// MongoDB (GridFS) — to avoid double-destroying (or wrongly destroying) an
 // asset a different job is still responsible for.
 const NOTIFICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 

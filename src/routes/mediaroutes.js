@@ -8,7 +8,7 @@ import {
 } from "../controllers/media.controllers.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
-import { upload, uploadPost, handleUploadError } from "../config/cloudinary.js";
+import { upload, uploadPost, handleUploadError } from "../config/gridfs.js";
 
 const MediaRouter = express.Router();
 

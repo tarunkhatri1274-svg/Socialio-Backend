@@ -9,7 +9,7 @@ import {sendOtp, verifyOtp, registerUser,
   getRecentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches
 } from "../controllers/usercontroller.js";
 import { protect } from "../middlewares/auth.middleware.js";
-import { upload } from "../config/cloudinary.js";
+import { upload } from "../config/gridfs.js";
 
 const UserRouter = express.Router();
 // ================= AUTH ROUTES =================

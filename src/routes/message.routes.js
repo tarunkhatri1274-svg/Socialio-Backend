@@ -21,7 +21,7 @@ import {
   markChatSeen,
 } from "../controllers/message.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
-import { uploadMessage, uploadWallpaper, handleUploadError } from "../config/cloudinary.js";
+import { uploadMessage, uploadWallpaper, handleUploadError } from "../config/gridfs.js";
 
 const MessageRouter = express.Router();
 
