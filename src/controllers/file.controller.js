@@ -3,7 +3,7 @@
 // <Video> players can seek and iOS/Android can start playback quickly.
 
 import mongoose from "mongoose";
-import { getBucket } from "../config/gridfs.js"
+import { getBucket } from "../config/gridfs.js";
 
 export const streamFile = async (req, res) => {
   try {
@@ -51,6 +51,14 @@ export const streamFile = async (req, res) => {
       "Cache-Control": "public, max-age=31536000, immutable",
       "Cross-Origin-Resource-Policy": "cross-origin",
     });
+
+    // ?download=<name> forces a "Save as" download instead of inline display
+    if (req.query.download) {
+      let name = String(req.query.download).replace(/[^\w.\- ]/g, "_").slice(0, 100) || "download";
+      const ext = (file.filename || "").match(/\.[A-Za-z0-9]{1,8}$/)?.[0] || "";
+      if (ext && !name.toLowerCase().endsWith(ext.toLowerCase())) name += ext;
+      res.set("Content-Disposition", `attachment; filename="${name}"`);
+    }
 
     if (total === 0) return res.end();
 
