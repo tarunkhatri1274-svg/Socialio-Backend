@@ -10,15 +10,12 @@ export const getNotifications = async (req, res) => {
     const limit = Number(req.query.limit) || 20;
     const skip = (page - 1) * limit;
 
+    // Messages live in the Messages screen only, never on Activity
+    const baseFilter = { recipient: userId, type: { $ne: "message" } };
+
     const [notifications, unreadCount, total] = await Promise.all([
-      Notification.find({ recipient: userId })
+      Notification.find(baseFilter)
         .populate("sender", "username profilePic")
-        // ← NEW — memoryItem's own `author` is who actually owns the
-        // memory (may differ from `sender` for memory_reply /
-        // memory_like_comment, where the sender liked/replied to a
-        // comment left by someone other than the memory's owner). The
-        // frontend needs this author id to know whose profile to open
-        // the MemoryViewer on.
         .populate({
           path: "memoryItem",
           select: "author group",
@@ -29,8 +26,8 @@ export const getNotifications = async (req, res) => {
         .skip(skip)
         .limit(limit)
         .lean(),
-      Notification.countDocuments({ recipient: userId, isRead: false }),
-      Notification.countDocuments({ recipient: userId }),
+      Notification.countDocuments({ ...baseFilter, isRead: false }),
+      Notification.countDocuments(baseFilter),
     ]);
 
     res.status(200).json({
@@ -118,7 +115,11 @@ export const deleteNotification = async (req, res) => {
 export const getUnreadNotificationCount = async (req, res) => {
   try {
     const userId = req.user._id || req.user.id;
-    const unreadCount = await Notification.countDocuments({ recipient: userId, isRead: false });
+    const unreadCount = await Notification.countDocuments({
+      recipient: userId,
+      isRead: false,
+      type: { $ne: "message" },
+    });
     res.status(200).json({ success: true, unreadCount });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

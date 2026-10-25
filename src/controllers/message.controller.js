@@ -3,7 +3,7 @@ import Message from '../models/messages/message.model.js';
 import Conversation from '../models/messages/conversation.model.js';
 import Group from '../models/messages/group.model.js';
 import { getIO, onlineUsers } from '../config/sockets.js';
-
+import { sendPushToUser } from '../utils/pushNotification.js';
 import {
   MAX_MESSAGE_IMAGE_BYTES,
   MAX_MESSAGE_AUDIO_BYTES,
@@ -135,54 +135,49 @@ export const createMessage = async (req, res) => {
 
     const io = getIO();
 
-    if (to && !isSystem && convo) {
-      await touchConversation(convo, { text, forUserId: to });
+if (to && !isSystem && convo) {
+  await touchConversation(convo, { text, forUserId: to });
 
-      // ── NEW: check if recipient muted the SENDER's messages ──────────
-      const recipientUser = await User.findById(to).select("mutedUsers");
-      const isMutedForMessages = recipientUser?.mutedUsers?.some(
-        (m) => m.user.toString() === senderId.toString() && m.muteMessage
-      );
+  // Did the recipient mute this sender's messages?
+  const recipientUser = await User.findById(to).select("mutedUsers");
+  const isMutedForMessages = !!recipientUser?.mutedUsers?.some(
+    (m) => m.user.toString() === senderId.toString() && m.muteMessage
+  );
 
-      const recipientSocketId = onlineUsers.get(to.toString());
-      if (recipientSocketId) {
-        if (!isMutedForMessages) {
-          // Normal path: live toast/notification event
-          const eventName = convo.status === 'pending' ? 'newMessageRequest' : 'receiveMessage';
-          io.to(recipientSocketId).emit(eventName, {
-            from: senderId,
-            text,
-            conversationId: chatId,
-            message: savedMessage,
-            createdAt: savedMessage.createdAt,
-            isRequest: convo.status === 'pending',
-          });
-        }
-        // Always sync unread badge counts, muted or not — the message
-        // still exists in their inbox, just without a toast/sound.
-        const [unreadCount, requestCount] = await Promise.all([
-          getUnreadCountForUser(to),
-          getRequestCountForUser(to),
-        ]);
-        io.to(recipientSocketId).emit('inboxCounts', { unreadCount, requestCount });
-      }
+  const recipientSocketId = onlineUsers.get(to.toString());
+  if (recipientSocketId) {
+    // Always deliver the message so chat + inbox update live.
+    // `muted: true` tells the app NOT to play a sound/alert.
+    const eventName = convo.status === 'pending' ? 'newMessageRequest' : 'receiveMessage';
+    io.to(recipientSocketId).emit(eventName, {
+      from: senderId,
+      text,
+      conversationId: chatId,
+      message: savedMessage,
+      createdAt: savedMessage.createdAt,
+      isRequest: convo.status === 'pending',
+      muted: isMutedForMessages,
+    });
 
-      // ← persisted notification: skipped if muted
-      if (!isMutedForMessages) {
-        const sender = await User.findById(senderId).select("username");
-        await createNotification({
-          recipientId: to,
-          senderId,
-          type: "message",
-          message:
-            convo.status === 'pending'
-              ? `${sender?.username || "Someone"} sent you a message request`
-              : `${sender?.username || "Someone"} sent you a message`,
-          chatId,
-          link: `/messages/${chatId}`,
-        });
-      }
-    }
+    const [unreadCount, requestCount] = await Promise.all([
+      getUnreadCountForUser(to),
+      getRequestCountForUser(to),
+    ]);
+    io.to(recipientSocketId).emit('inboxCounts', { unreadCount, requestCount });
+  }
+
+  // Push only. NOT saved as a notification, so it never shows on Activity.
+  if (!isMutedForMessages) {
+    const sender = await User.findById(senderId).select("username");
+    sendPushToUser(to, {
+      title: sender?.username || "New message",
+      body: convo.status === 'pending'
+        ? "sent you a message request"
+        : (text?.slice(0, 100) || "📎 Media"),
+      data: { type: "message", chatId },
+    });
+  }
+}
 
     res.status(201).json(savedMessage);
   } catch (error) {
@@ -535,40 +530,41 @@ export const forwardMessage = async (req, res) => {
     await touchConversation(convo, { text: message.text || '📎 Media', forUserId: to });
 
     const io = getIO();
-    if (to) {
-      const recipientSocketId = onlineUsers.get(to.toString());
-      if (recipientSocketId) {
-        const eventName = convo.status === 'pending' ? 'newMessageRequest' : 'receiveMessage';
-        io.to(recipientSocketId).emit(eventName, {
-          from: userId,
-          conversationId: toChatId,
-          message: savedForwardedMessage,
-          isForwarded: true,
-          createdAt: savedForwardedMessage.createdAt,
-          isRequest: convo.status === 'pending',
-        });
+if (to) {
+  const fwdRecipient = await User.findById(to).select("mutedUsers");
+  const isMuted = !!fwdRecipient?.mutedUsers?.some(
+    (m) => m.user.toString() === userId.toString() && m.muteMessage
+  );
 
-        const [unreadCount, requestCount] = await Promise.all([
-          getUnreadCountForUser(to),
-          getRequestCountForUser(to),
-        ]);
-        io.to(recipientSocketId).emit('inboxCounts', { unreadCount, requestCount });
-      }
+  const recipientSocketId = onlineUsers.get(to.toString());
+  if (recipientSocketId) {
+    const eventName = convo.status === 'pending' ? 'newMessageRequest' : 'receiveMessage';
+    io.to(recipientSocketId).emit(eventName, {
+      from: userId,
+      conversationId: toChatId,
+      message: savedForwardedMessage,
+      isForwarded: true,
+      createdAt: savedForwardedMessage.createdAt,
+      isRequest: convo.status === 'pending',
+      muted: isMuted,
+    });
 
-      // ← persisted notification: sent you a message (forwarded)
-      const sender = await User.findById(userId).select("username");
-      await createNotification({
-        recipientId: to,
-        senderId: userId,
-        type: "message",
-        message:
-          convo.status === 'pending'
-            ? `${sender?.username || "Someone"} sent you a message request`
-            : `${sender?.username || "Someone"} sent you a message`,
-        chatId: toChatId,
-        link: `/messages/${toChatId}`,
-      });
-    }
+    const [unreadCount, requestCount] = await Promise.all([
+      getUnreadCountForUser(to),
+      getRequestCountForUser(to),
+    ]);
+    io.to(recipientSocketId).emit('inboxCounts', { unreadCount, requestCount });
+  }
+
+  if (!isMuted) {
+    const sender = await User.findById(userId).select("username");
+    sendPushToUser(to, {
+      title: sender?.username || "New message",
+      body: message.text?.slice(0, 100) || "📎 Forwarded message",
+      data: { type: "message", chatId: toChatId },
+    });
+  }
+}
 
     res.status(201).json(savedForwardedMessage);
   } catch (error) {

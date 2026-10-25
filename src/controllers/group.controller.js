@@ -548,39 +548,35 @@ export const sendGroupMessage = async (req, res) => {
     group.clearedFor = [];
     await group.save();
 
-    emitToGroupMembers(
-      group,
-      "receiveGroupMessage",
-      { chatId, groupId: group._id, message: newMessage },
-      { skip: senderId }
-    );
+const acceptedIds = group.members
+  .filter((m) => m.status === "accepted")
+  .map((m) => m.user);
+const mutedSet = await getMutedSet(acceptedIds, senderId);
 
-    // ── NEW — offline-member push fallback. emitToGroupMembers() above
-    // only reaches members with a live socket connection right now;
-    // unlike 1:1 messages (which go through createNotification() in
-    // message.controller.js and so already get a DB record + push
-    // fallback), group messages had no equivalent at all — an offline
-    // or fully-closed-app member got nothing, not even a badge update
-    // on next open. Sending a direct FCM push here (rather than through
-    // createNotification/the Notification model) keeps this change
-    // self-contained without needing a schema change for a new
-    // "group_message" notification type; add that persistence later if
-    // you want group messages to show up in the notification feed too.
-    const senderName = newMessage.user?.username || "Someone";
-    const previewText =
-      text?.slice(0, 100) || (media?.url ? "📎 Media" : sharedPost ? "📷 Shared a post" : "Sent a message");
-    group.members.forEach((m) => {
-      if (m.status !== "accepted") return;
-      if (m.user.toString() === senderId.toString()) return;
-      const sid = onlineUsers.get(m.user.toString());
-      if (!sid) {
-        sendPushToUser(m.user, {
-          title: group.name || "Group message",
-          body: `${senderName}: ${previewText}`,
-          data: { type: "group_message", chatId, groupId: group._id.toString() },
-        });
-      }
+emitGroupMessage(
+  group,
+  { chatId, groupId: group._id, message: newMessage },
+  senderId,
+  mutedSet
+);
+
+// Offline push fallback (skips muted members)
+const senderName = newMessage.user?.username || "Someone";
+const previewText =
+  text?.slice(0, 100) || (media?.url ? "📎 Media" : sharedPost ? "📷 Shared a post" : "Sent a message");
+group.members.forEach((m) => {
+  if (m.status !== "accepted") return;
+  if (m.user.toString() === senderId.toString()) return;
+  if (mutedSet.has(m.user.toString())) return; // ← muted: no push
+  const sid = onlineUsers.get(m.user.toString());
+  if (!sid) {
+    sendPushToUser(m.user, {
+      title: group.name || "Group message",
+      body: `${senderName}: ${previewText}`,
+      data: { type: "group_message", chatId, groupId: group._id.toString() },
     });
+  }
+});
 
     res.status(201).json(newMessage);
   } catch (error) {
@@ -739,12 +735,16 @@ export const forwardMessageToGroup = async (req, res) => {
     group.clearedFor = [];
     await group.save();
 
-    emitToGroupMembers(
-      group,
-      "receiveGroupMessage",
-      { chatId, groupId: group._id, message: forwardedMessage },
-      { skip: userId }
-    );
+const acceptedIds = group.members
+  .filter((m) => m.status === "accepted")
+  .map((m) => m.user);
+const mutedSet = await getMutedSet(acceptedIds, userId);
+emitGroupMessage(
+  group,
+  { chatId, groupId: group._id, message: forwardedMessage },
+  userId,
+  mutedSet
+);
 
     res.status(201).json(forwardedMessage);
   } catch (error) {
@@ -956,27 +956,31 @@ export const createGroupPoll = async (req, res) => {
     group.clearedFor = [];
     await group.save();
 
-    emitToGroupMembers(
-      group,
-      "receiveGroupMessage",
-      { chatId, groupId: group._id, message: newMessage },
-      { skip: senderId }
-    );
+    const acceptedIds = group.members
+  .filter((m) => m.status === "accepted")
+  .map((m) => m.user);
+const mutedSet = await getMutedSet(acceptedIds, senderId);
 
-    // Offline-member push fallback (same as sendGroupMessage)
-    const senderName = newMessage.user?.username || "Someone";
-    group.members.forEach((m) => {
-      if (m.status !== "accepted") return;
-      if (m.user.toString() === senderId.toString()) return;
-      if (!onlineUsers.get(m.user.toString())) {
-        sendPushToUser(m.user, {
-          title: group.name || "Group message",
-          body: `${senderName} created a poll: ${q.slice(0, 80)}`,
-          data: { type: "group_message", chatId, groupId: group._id.toString() },
-        });
-      }
+emitGroupMessage(
+  group,
+  { chatId, groupId: group._id, message: newMessage },
+  senderId,
+  mutedSet
+);
+
+const senderName = newMessage.user?.username || "Someone";
+group.members.forEach((m) => {
+  if (m.status !== "accepted") return;
+  if (m.user.toString() === senderId.toString()) return;
+  if (mutedSet.has(m.user.toString())) return;
+  if (!onlineUsers.get(m.user.toString())) {
+    sendPushToUser(m.user, {
+      title: group.name || "Group message",
+      body: `${senderName} created a poll: ${q.slice(0, 80)}`,
+      data: { type: "group_message", chatId, groupId: group._id.toString() },
     });
-
+  }
+});
     res.status(201).json(newMessage);
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -1055,4 +1059,28 @@ export const markGroupSeen = async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
+};
+// Which of these members have muted this sender's messages?
+const getMutedSet = async (memberUserIds, senderId) => {
+  const muted = await User.find({
+    _id: { $in: memberUserIds },
+    mutedUsers: { $elemMatch: { user: senderId, muteMessage: true } },
+  }).select("_id").lean();
+  return new Set(muted.map((u) => u._id.toString()));
+};
+
+// Same as emitToGroupMembers, but adds a per-member `muted` flag
+const emitGroupMessage = (group, payload, senderId, mutedSet) => {
+  const io = getIO();
+  group.members.forEach((m) => {
+    if (m.status !== "accepted") return;
+    if (m.user.toString() === senderId.toString()) return;
+    const sid = onlineUsers.get(m.user.toString());
+    if (sid) {
+      io.to(sid).emit("receiveGroupMessage", {
+        ...payload,
+        muted: mutedSet.has(m.user.toString()),
+      });
+    }
+  });
 };
