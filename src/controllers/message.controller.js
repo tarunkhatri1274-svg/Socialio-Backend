@@ -1036,3 +1036,49 @@ export const markChatSeen = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
+// ── Get whether I've muted this person's messages ──────────────────────
+export const getChatMuteStatus = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { otherUserId } = req.params;
+
+    const me = await User.findById(userId).select("mutedUsers");
+    const entry = me?.mutedUsers?.find((m) => m.user.toString() === otherUserId);
+
+    res.status(200).json({ success: true, muted: !!entry?.muteMessage });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── Mute / unmute this person's messages ───────────────────────────────
+export const setChatMute = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { otherUserId } = req.params;
+    const muted = !!req.body.muted;
+
+    const me = await User.findById(userId);
+    if (!me) return res.status(404).json({ success: false, message: "User not found" });
+
+    const entry = me.mutedUsers.find((m) => m.user.toString() === otherUserId);
+
+    if (entry) {
+      entry.muteMessage = muted;
+    } else if (muted) {
+      me.mutedUsers.push({
+        user: otherUserId,
+        muteMessage: true,
+        muteStory: false,
+        mutePost: false,
+      });
+    }
+
+    await me.save();
+    res.status(200).json({ success: true, muted });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

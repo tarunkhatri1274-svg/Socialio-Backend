@@ -19,6 +19,8 @@ import {
   setConversationWallpaper,
   clearConversationWallpaper,
   markChatSeen,
+  getChatMuteStatus,
+  setChatMute,
 } from "../controllers/message.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 import { uploadMessage, uploadWallpaper, handleUploadError } from "../config/gridfs.js";
@@ -59,7 +61,9 @@ MessageRouter.patch("/like/:messageId", protect, toggleLikeMessage);
 MessageRouter.delete("/chat/:chatId/clear", protect, clearChat);
 
 MessageRouter.get("/recent-users", protect, getRecentChatUsers);
-
+// ── Mute / unmute a person's messages (per-user) ────────────────────────
+MessageRouter.get("/mute/:otherUserId", protect, getChatMuteStatus);
+MessageRouter.patch("/mute/:otherUserId", protect, setChatMute);
 // ── Chat wallpaper (per-user, per-chat) ─────────────────────────────────
 // PUT with a multipart "photo" field sets a custom image wallpaper; PUT
 // with a JSON body ({ id, type, value, ... }) sets a preset one. Either
