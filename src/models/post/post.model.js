@@ -58,6 +58,22 @@ const collaboratorSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// ================= REACTION SCHEMA =================
+// One entry per user who reacted. `likes` (array of user ids) stays the
+// source of truth for "who liked" so every existing count / query keeps
+// working; this array only adds WHICH reaction each liker picked.
+// A liker with no entry here (an old like from before reactions existed)
+// is treated as a plain "like" by the controller.
+export const REACTION_TYPES = ["like", "love", "haha", "wow", "sad", "angry"];
+
+const reactionSchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    type: { type: String, enum: REACTION_TYPES, default: "like" },
+  },
+  { _id: false }
+);
+
 // ================= POST SCHEMA =================
 const postSchema = new mongoose.Schema(
   {
@@ -77,6 +93,8 @@ const postSchema = new mongoose.Schema(
     tags: [{ type: String, lowercase: true, trim: true }],
     mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    // ← NEW: which reaction (like/love/haha/wow/sad/angry) each liker chose.
+    likeReactions: { type: [reactionSchema], default: [] },
     comments: [commentSchema],
 
     // ================= SHARES =================

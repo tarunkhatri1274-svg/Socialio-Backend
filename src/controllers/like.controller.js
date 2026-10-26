@@ -3,53 +3,102 @@ import User from '../models/user/user.model.js';
 import { getIO, onlineUsers } from '../config/sockets.js';
 import { createNotification } from './notification.helper.js';
 
+const REACTION_TYPES = ["like", "love", "haha", "wow", "sad", "angry"];
+const REACTION_EMOJI = { like: "👍", love: "❤️", haha: "😆", wow: "😮", sad: "😢", angry: "😡" };
+
+// Build { userId -> reactionType } from a post's likeReactions. A liker with
+// no entry (a like made before reactions existed) counts as a plain "like".
+const buildReactionMap = (post) => {
+  const map = new Map();
+  (post.likeReactions || []).forEach((r) => map.set(r.user.toString(), r.type));
+  return map;
+};
+
+// Attach `reaction` to every populated liker and total up a per-type summary.
+const attachReactions = (post) => {
+  const map = buildReactionMap(post);
+  const counts = {};
+  const list = post.likes.map((u) => {
+    const obj = u.toObject();
+    obj.reaction = map.get(obj._id.toString()) || "like";
+    counts[obj.reaction] = (counts[obj.reaction] || 0) + 1;
+    return obj;
+  });
+  return { list, counts };
+};
+
+// POST /auth/like/:id   body: { reaction?: "like"|"love"|"haha"|"wow"|"sad"|"angry" }
+//   - not reacted yet      -> add the reaction
+//   - same reaction again  -> remove it (un-like)
+//   - different reaction   -> switch to the new one (still liked)
+// `reaction` defaults to "like", so old clients that send no body keep working.
 export const toggleLike = async (req, res) => {
   try {
     const postId = req.params.id;
     const userId = req.user.id;
 
-    const existingPost = await Post.findById(postId).select('likes author');
+    const reaction = req.body?.reaction ?? "like";
+    if (!REACTION_TYPES.includes(reaction)) {
+      return res.status(400).json({ success: false, message: "Invalid reaction" });
+    }
+
+    const existingPost = await Post.findById(postId).select('likes likeReactions author');
     if (!existingPost) {
       return res.status(404).json({ success: false, message: "Post not found" });
     }
 
     const alreadyLiked = existingPost.likes.some(id => id.toString() === userId);
+    const currentReaction = alreadyLiked
+      ? (buildReactionMap(existingPost).get(userId) || "like")
+      : null;
 
-    // ── Atomic update — $addToSet/$pull avoid the read-then-write race
-    // that let the same userId get pushed into `likes` twice when two
-    // like requests (e.g. button tap + double-tap-to-like) landed close
-    // together. $addToSet guarantees no duplicate entries even under
-    // concurrent requests; $pull is naturally idempotent.
-    const post = await Post.findByIdAndUpdate(
-      postId,
-      alreadyLiked
-        ? { $pull: { likes: userId } }
-        : { $addToSet: { likes: userId } },
-      { new: true }
-    ).populate('author', '_id username');
+    // same reaction tapped again => remove; anything else => add / switch
+    const removing = alreadyLiked && currentReaction === reaction;
+
+    // Atomic updates — $addToSet/$pull avoid the read-then-write race that
+    // let the same userId get pushed into `likes` twice when two requests
+    // (e.g. button tap + double-tap-to-like) landed close together.
+    let post;
+    if (removing) {
+      post = await Post.findByIdAndUpdate(
+        postId,
+        { $pull: { likes: userId, likeReactions: { user: userId } } },
+        { new: true }
+      ).populate('author', '_id username');
+    } else {
+      // drop any previous entry first ($pull and $push on the same array
+      // can't share one update), then add the new one.
+      await Post.updateOne({ _id: postId }, { $pull: { likeReactions: { user: userId } } });
+      post = await Post.findByIdAndUpdate(
+        postId,
+        {
+          $addToSet: { likes: userId },
+          $push: { likeReactions: { user: userId, type: reaction } },
+        },
+        { new: true }
+      ).populate('author', '_id username');
+    }
 
     if (!post) {
       return res.status(404).json({ success: false, message: "Post not found" });
     }
 
-    // ── populate likedBy AND attach mutual-likes info for the response.
-    // "Mutual" here means: does the CURRENT viewer (the person who just
-    // toggled the like) follow this liker? Followed likers are sorted to
-    // the front so the frontend's "Liked by X and N others" line
-    // naturally surfaces someone the viewer actually knows, the same way
-    // it does from getPostLikers below.
+    const nowLiked = !removing;
+
+    // populate likedBy AND attach mutual-likes info for the response.
+    // "Mutual" = does the CURRENT viewer follow this liker? Followed likers
+    // are sorted to the front for the "Liked by X and N others" line.
     const populatedPost = await Post.findById(postId)
       .populate('likes', 'username profilePic bio');
 
     const viewer = await User.findById(userId).select("following");
     const followingIds = new Set((viewer?.following || []).map(id => id.toString()));
 
-    const likedByWithMutual = populatedPost.likes.map(u => {
-      const obj = u.toObject();
-      obj.isFollowedByViewer = followingIds.has(obj._id.toString());
-      return obj;
-    });
-    // Followed-by-viewer likers first, preserving relative order otherwise.
+    const { list: likedByWithReaction, counts: reactionCounts } = attachReactions(populatedPost);
+    const likedByWithMutual = likedByWithReaction.map(obj => ({
+      ...obj,
+      isFollowedByViewer: followingIds.has(obj._id.toString()),
+    }));
     likedByWithMutual.sort(
       (a, b) => (b.isFollowedByViewer ? 1 : 0) - (a.isFollowedByViewer ? 1 : 0)
     );
@@ -57,12 +106,14 @@ export const toggleLike = async (req, res) => {
     const io      = getIO();
     const ownerId = post.author?._id?.toString();
 
-    // ── real-time notification to post owner ──────────────────────────────
+    // real-time notification to post owner — only when someone NEWLY reacts
+    // (not when switching reaction or removing).
     if (!alreadyLiked && ownerId && ownerId !== userId) {
       const ownerSocketId = onlineUsers.get(ownerId);
       if (ownerSocketId) {
         io.to(ownerSocketId).emit("receiveNotification", {
           type:      "like",
+          reaction,
           from:      userId,
           postId,
           createdAt: new Date(),
@@ -70,35 +121,38 @@ export const toggleLike = async (req, res) => {
       }
 
       const liker = await User.findById(userId).select("username");
+      const who = liker?.username || "Someone";
       await createNotification({
         recipientId: ownerId,
         senderId: userId,
         type: "like_post",
         postType: post.postType,
-        message: `${liker?.username || "Someone"} liked your post`,
+        message: reaction === "like"
+          ? `${who} liked your post`
+          : `${who} reacted ${REACTION_EMOJI[reaction]} to your post`,
         postId,
         link: `/post/${postId}`,
       });
     }
 
-    // ── broadcast live like count to everyone viewing this post ──────────
-    // NOTE: likedBy broadcast here is NOT per-viewer sorted (a socket
-    // broadcast has no single "viewer"), so every open client applies its
-    // own mutual sort locally if it wants one; the sorted version below is
-    // only returned in the direct HTTP response to the person who just
-    // clicked like.
+    // broadcast live like count + reactions to everyone viewing this post.
+    // Not per-viewer sorted (a broadcast has no single viewer); the sorted
+    // version below only goes back to the person who just reacted.
     io.to(`post:${postId}`).emit(`post:${postId}:likes`, {
       totalLikes: populatedPost.likes.length,
-      liked: !alreadyLiked,
-      likedBy: populatedPost.likes,
+      liked: nowLiked,
+      likedBy: likedByWithReaction,
+      reactionCounts,
     });
 
     return res.status(200).json({
-      success:    true,
-      liked:      !alreadyLiked,
-      totalLikes: populatedPost.likes.length,
-      likedBy:    likedByWithMutual,
-      message:    alreadyLiked ? "Post unliked" : "Post liked",
+      success:        true,
+      liked:          nowLiked,
+      reaction:       nowLiked ? reaction : null,
+      totalLikes:     populatedPost.likes.length,
+      likedBy:        likedByWithMutual,
+      reactionCounts,
+      message:        removing ? "Reaction removed" : alreadyLiked ? "Reaction updated" : "Post liked",
     });
 
   } catch (error) {
@@ -128,11 +182,11 @@ export const getPostLikers = async (req, res) => {
     const viewer = await User.findById(viewerId).select("following");
     const followingIds = new Set((viewer?.following || []).map(id => id.toString()));
 
-    const likedByWithMutual = post.likes.map(u => {
-      const obj = u.toObject();
-      obj.isFollowedByViewer = followingIds.has(obj._id.toString());
-      return obj;
-    });
+    const { list: likedByWithReaction, counts: reactionCounts } = attachReactions(post);
+    const likedByWithMutual = likedByWithReaction.map(obj => ({
+      ...obj,
+      isFollowedByViewer: followingIds.has(obj._id.toString()),
+    }));
 
     likedByWithMutual.sort(
       (a, b) => (b.isFollowedByViewer ? 1 : 0) - (a.isFollowedByViewer ? 1 : 0)
@@ -144,6 +198,7 @@ export const getPostLikers = async (req, res) => {
       success:          true,
       likedBy:          likedByWithMutual,
       totalLikes:       post.likes.length,
+      reactionCounts,   // e.g. { like: 4, love: 2, haha: 1 }
       mutualLikesCount, // ← how many likers the viewer follows, if you want to show "X mutual" separately
     });
 
