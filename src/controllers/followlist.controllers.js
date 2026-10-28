@@ -2,12 +2,19 @@
 
 import User from "../models/user/user.model.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
+import { getBlockedIdSets } from "../utils/blockHelper.js";
 
 // ── GET FOLLOWERS ──────────────────────────────────────────────────────────
 export const getFollowers = async (req, res) => {
   try {
     const { userId }      = req.params;
     const currentUserId   = req.user.id;
+
+    // 🚫 Strict block: blocked either way → profile "does not exist"
+    const { hidden } = await getBlockedIdSets(currentUserId);
+    if (userId !== currentUserId && hidden.includes(userId))
+      return res.status(404).json({ success: false, message: "User not found" });
+
     const user = await User.findById(userId)
       .populate("followers", "_id username profilePic");
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
@@ -16,7 +23,8 @@ export const getFollowers = async (req, res) => {
       if (!isFollower)
         return res.status(403).json({ success: false, message: "This account is private" });
     }
-    res.status(200).json({ success: true, followers: user.followers });
+    const followers = user.followers.filter((f) => !hidden.includes(f._id.toString()));
+    res.status(200).json({ success: true, followers });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -27,6 +35,11 @@ export const getFollowing = async (req, res) => {
   try {
     const { userId }    = req.params;
     const currentUserId = req.user.id;
+
+    const { hidden } = await getBlockedIdSets(currentUserId);
+    if (userId !== currentUserId && hidden.includes(userId))
+      return res.status(404).json({ success: false, message: "User not found" });
+
     const user = await User.findById(userId)
       .populate("following", "_id username profilePic");
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
@@ -35,7 +48,8 @@ export const getFollowing = async (req, res) => {
       if (!isFollower)
         return res.status(403).json({ success: false, message: "This account is private" });
     }
-    res.status(200).json({ success: true, following: user.following });
+    const following = user.following.filter((f) => !hidden.includes(f._id.toString()));
+    res.status(200).json({ success: true, following });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -52,12 +66,22 @@ export const getMutualFollowers = async (req, res) => {
     if (userId === currentUserId)
       return res.status(200).json({ success: true, mutuals: [], count: 0 });
 
+    const { hidden } = await getBlockedIdSets(currentUserId);
+    if (hidden.includes(userId))
+      return res.status(200).json({ success: true, mutuals: [], count: 0 });
+
     const [targetUser, currentUser] = await Promise.all([
-      User.findById(userId).select("followers isPrivate"),
+      User.findById(userId).select("followers isPrivate blockedUsers"),
       User.findById(currentUserId).select("followers following"),
     ]);
 
     if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
+
+    // Anyone the target has blocked must not show up either
+    const hiddenSet = new Set([
+      ...hidden,
+      ...(targetUser.blockedUsers || []).map((id) => id.toString()),
+    ]);
 
     // People the current user follows
     const myFollowingIds = new Set(
@@ -67,7 +91,7 @@ export const getMutualFollowers = async (req, res) => {
     // People who follow the target user — intersect with who I follow
     const mutualIds = (targetUser.followers || [])
       .map((id) => id.toString())
-      .filter((id) => myFollowingIds.has(id) && id !== currentUserId);
+      .filter((id) => myFollowingIds.has(id) && id !== currentUserId && !hiddenSet.has(id));
 
     if (mutualIds.length === 0)
       return res.status(200).json({ success: true, mutuals: [], count: 0 });

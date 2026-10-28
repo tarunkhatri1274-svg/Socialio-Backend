@@ -17,6 +17,7 @@ import { canViewCollabPost } from "./media.controllers.js";
 import { deleteFileByUrl } from "../config/gridfs.js";
 import jwt from "jsonwebtoken";
 import env from "../services/simpleENV.js";
+import { getBlockedIdSets, isBlockedEitherWay } from "../utils/blockHelper.js";
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── Helpers: delete stored files (MongoDB GridFS). deleteFileByUrl never
@@ -578,8 +579,12 @@ export const searchUsers = async (req, res) => {
   try {
     const query = req.query.q || req.query.query;
     if (!query) return res.json({ users: [] });
-    const users = await User.find({ username: { $regex: query, $options: "i" } })
-      .select("username profilePic bio isPrivate");
+    // 🚫 Strict block: hide users I blocked AND users who blocked me
+    const { hidden } = await getBlockedIdSets(req.user.id);
+    const users = await User.find({
+      username: { $regex: query, $options: "i" },
+      _id: { $nin: hidden },
+    }).select("username profilePic bio isPrivate");
     res.json({ users });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -595,7 +600,8 @@ export const getRecentSearches = async (req, res) => {
       .populate("recentSearches.user", "_id username profilePic bio isPrivate");
     if (!me) return res.status(404).json({ success: false, message: "User not found" });
 
-    const blocked = new Set((me.blockedUsers || []).map((id) => id.toString()));
+    const { hidden } = await getBlockedIdSets(req.user.id);
+    const blocked = new Set(hidden); // I blocked them OR they blocked me
     const users = (me.recentSearches || [])
       .map((r) => r.user)
       .filter((u) => u && !blocked.has(u._id.toString())); // drops deleted + blocked users
@@ -614,6 +620,8 @@ export const addRecentSearch = async (req, res) => {
 
     const exists = await User.exists({ _id: targetId });
     if (!exists) return res.status(404).json({ success: false, message: "User not found" });
+    if (await isBlockedEitherWay(me, targetId))
+      return res.status(404).json({ success: false, message: "User not found" });
 
     // remove any old entry first so it moves to the top (Mongo can't $pull and $push the same field in one update)
     await User.updateOne({ _id: me }, { $pull: { recentSearches: { user: targetId } } });
@@ -665,6 +673,12 @@ export const getUserById = async (req, res) => {
       .populate("followers", "_id")
       .populate("following", "_id");
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    // 🚫 Strict block: if THEY blocked ME, their profile does not exist for me
+    if (userId !== req.user.id.toString()) {
+      const theyBlockedMe = await User.exists({ _id: userId, blockedUsers: req.user.id });
+      if (theyBlockedMe)
+        return res.status(404).json({ success: false, message: "User not found" });
+    }
     const currentUser = await User.findById(req.user.id).select("blockedUsers following");
     const isBlockedByMe = currentUser?.blockedUsers?.some((id) => id.toString() === userId) ?? false;
 
@@ -689,6 +703,9 @@ export const getPostsByUserId = async (req, res) => {
   try {
     const { userId } = req.params;
     const viewerId = req.user._id;
+    // 🚫 Strict block: no posts across a block, in either direction
+    if (viewerId.toString() !== userId.toString() && (await isBlockedEitherWay(viewerId, userId)))
+      return res.json({ success: true, posts: [] });
     const [ownPosts, collabPosts] = await Promise.all([
       Post.find({ author: userId })
         .populate("author", "username profilePic")
@@ -738,6 +755,12 @@ export const getPostById = async (req, res) => {
       .populate("collaborators.user", "username profilePic");
 
     if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+
+    // 🚫 Strict block
+    const postAuthorId = post.author?._id?.toString();
+    if (postAuthorId && postAuthorId !== req.user.id.toString() &&
+        (await isBlockedEitherWay(req.user.id, postAuthorId)))
+      return res.status(404).json({ success: false, message: "Post not found" });
 
     res.status(200).json({ success: true, post });
   } catch (error) {
@@ -881,6 +904,11 @@ export const blockUser = async (req, res) => {
     if (!currentUser.blockedUsers) currentUser.blockedUsers = [];
     currentUser.blockedUsers.push(targetUserId);
     await Promise.all([currentUser.save(), targetUser.save()]);
+    // 🚫 Remove each other from recent searches
+    await Promise.all([
+      User.updateOne({ _id: currentUserId }, { $pull: { recentSearches: { user: targetUserId } } }),
+      User.updateOne({ _id: targetUserId },  { $pull: { recentSearches: { user: currentUserId } } }),
+    ]);
     res.status(200).json({ success: true, message: "User blocked successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -915,10 +943,11 @@ export const getBlockedUsers = async (req, res) => {
 export const getPublicReels = async (req, res) => {
   try {
     const currentUserId = req.user._id || req.user.id;
-    const currentUser   = await User.findById(currentUserId).select("blockedUsers following");
-    const blockedIds    = (currentUser?.blockedUsers || []).map((id) => id.toString());
+    const currentUser   = await User.findById(currentUserId).select("following");
+    // 🚫 hide authors I blocked AND authors who blocked me
+    const { hidden: blockedIds } = await getBlockedIdSets(currentUserId);
     const followingIds  = (currentUser?.following || []).map((id) => id.toString());
-    const publicUsers   = await User.find({ isPrivate: false }).select("_id");
+    const publicUsers   = await User.find({ isPrivate: false, _id: { $nin: blockedIds } }).select("_id");
     const publicUserIds = publicUsers.map((u) => u._id);
     const reels = await Post.find({
       author: { $in: publicUserIds },

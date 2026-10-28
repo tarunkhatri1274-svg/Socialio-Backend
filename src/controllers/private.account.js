@@ -2,6 +2,7 @@ import User from "../models/user/user.model.js";
 import Notification from "../models/notifications/notification.model.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
+import { isBlockedEitherWay } from "../utils/blockHelper.js";
 
 // ─────────────────────────────────────────────
 // TOGGLE PRIVATE ACCOUNT
@@ -73,6 +74,14 @@ export const sendFollowRequest = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "User not found",
+      });
+    }
+
+    // 🚫 Strict block: no follow requests across a block
+    if (await isBlockedEitherWay(currentUserId, targetUserId)) {
+      return res.status(403).json({
+        success: false,
+        message: "You cannot follow this user",
       });
     }
 
@@ -664,6 +673,14 @@ export const checkPrivateAccount = async (req, res, next) => {
       });
     }
 
+    // 🚫 Strict block: blocked either way → profile does not exist
+    if (profileUserId !== currentUserId && (await isBlockedEitherWay(profileUserId, currentUserId))) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
     // Public account — allow
     if (!profileUser.isPrivate) return next();
 
@@ -689,4 +706,4 @@ export const checkPrivateAccount = async (req, res, next) => {
       message: error.message,
     });
   }
-}; 
+};
