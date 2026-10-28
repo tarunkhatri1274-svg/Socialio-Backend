@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Notification from "../models/notifications/notification.model.js";
+import { getBlockedIdSets } from "../utils/blockHelper.js";
 
 // ================= GET NOTIFICATIONS (paginated, newest first) =================
 export const getNotifications = async (req, res) => {
@@ -11,7 +12,9 @@ export const getNotifications = async (req, res) => {
     const skip = (page - 1) * limit;
 
     // Messages live in the Messages screen only, never on Activity
-    const baseFilter = { recipient: userId, type: { $ne: "message" } };
+    // 🚫 Strict block: no notifications from anyone blocked either way
+    const { hidden } = await getBlockedIdSets(userId);
+    const baseFilter = { recipient: userId, type: { $ne: "message" }, sender: { $nin: hidden } };
 
     const [notifications, unreadCount, total] = await Promise.all([
       Notification.find(baseFilter)
@@ -115,10 +118,12 @@ export const deleteNotification = async (req, res) => {
 export const getUnreadNotificationCount = async (req, res) => {
   try {
     const userId = req.user._id || req.user.id;
+    const { hidden } = await getBlockedIdSets(userId);
     const unreadCount = await Notification.countDocuments({
       recipient: userId,
       isRead: false,
       type: { $ne: "message" },
+      sender: { $nin: hidden },
     });
     res.status(200).json({ success: true, unreadCount });
   } catch (error) {

@@ -3,6 +3,7 @@ import Post from "../models/post/post.model.js";
 import User from "../models/user/user.model.js";
 import { getIO } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
+import { getBlockedIdSets, isPostBlockedFor } from "../utils/blockHelper.js";
 
 // ── Comment-poll / pin settings ───────────────────────────────────────────
 const MAX_PINNED_COMMENTS = 3;
@@ -27,6 +28,9 @@ export const addComment = async (req, res) => {
 
     const post = await Post.findById(postId);
     if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+
+    // 🚫 Strict block
+    if (await isPostBlockedFor(post, req.user._id)) return res.status(404).json({ success: false, message: "Post not found" });
 
     post.comments.push({ user: req.user._id, text });
     await post.save();
@@ -136,6 +140,8 @@ export const likeComment = async (req, res) => {
     const comment = post.comments.id(commentId);
     if (!comment) return res.status(404).json({ success: false, message: "Comment not found" });
 
+    if (await isPostBlockedFor(post, req.user._id)) return res.status(404).json({ success: false, message: "Post not found" });
+
     const alreadyLiked = comment.likes.includes(req.user._id);
     if (alreadyLiked) {
       comment.likes = comment.likes.filter(id => id.toString() !== req.user._id.toString());
@@ -191,6 +197,8 @@ export const replyComment = async (req, res) => {
 
     const comment = post.comments.id(commentId);
     if (!comment) return res.status(404).json({ success: false, message: "Comment not found" });
+
+    if (await isPostBlockedFor(post, req.user._id)) return res.status(404).json({ success: false, message: "Post not found" });
 
     // ← NEW — resolve who this reply is actually directed at, before
     // pushing the new reply (so we're reading the PRE-existing thread).
@@ -308,6 +316,8 @@ export const likeReply = async (req, res) => {
     const reply = comment.replies.id(replyId);
     if (!reply) return res.status(404).json({ success: false, message: "Reply not found" });
 
+    if (await isPostBlockedFor(post, req.user._id)) return res.status(404).json({ success: false, message: "Post not found" });
+
     const alreadyLiked = reply.likes.includes(req.user._id);
     if (alreadyLiked) {
       reply.likes = reply.likes.filter(id => id.toString() !== req.user._id.toString());
@@ -362,11 +372,18 @@ export const getComments = async (req, res) => {
 
     if (!post) return res.status(404).json({ success: false, message: "Post not found" });
 
-    const comments = post.comments.map(c => ({
-      ...c.toObject(),
-      author: c.user,
-      postAuthor: post.author,
-    }));
+    // 🚫 Strict block: hide the post, and hide comments/replies by blocked users
+    if (await isPostBlockedFor(post, req.user._id)) return res.status(404).json({ success: false, message: "Post not found" });
+    const { hidden } = await getBlockedIdSets(req.user._id);
+    const isHidden = (u) => hidden.includes(String(u?._id ?? u));
+
+    const comments = post.comments
+      .filter((c) => !isHidden(c.user))
+      .map((c) => {
+        const obj = c.toObject();
+        obj.replies = (obj.replies || []).filter((r) => !isHidden(r.user));
+        return { ...obj, author: c.user, postAuthor: post.author };
+      });
 
     // Pinned comments first (most recently pinned on top); rest keep order.
     comments.sort((a, b) => {

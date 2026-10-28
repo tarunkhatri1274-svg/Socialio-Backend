@@ -2,6 +2,7 @@ import Post from '../models/post/post.model.js';
 import User from '../models/user/user.model.js';
 import { getIO, onlineUsers } from '../config/sockets.js';
 import { createNotification } from './notification.helper.js';
+import { getBlockedIdSets } from '../utils/blockHelper.js';
 
 const REACTION_TYPES = ["like", "love", "haha", "wow", "sad", "angry"];
 const REACTION_EMOJI = { like: "👍", love: "❤️", haha: "😆", wow: "😮", sad: "😢", angry: "😡" };
@@ -34,6 +35,7 @@ const attachReactions = (post) => {
 // `reaction` defaults to "like", so old clients that send no body keep working.
 export const toggleLike = async (req, res) => {
   try {
+    console.log("LIKE BODY:", req.body, "userId:", req.user.id);
     const postId = req.params.id;
     const userId = req.user.id;
 
@@ -44,6 +46,12 @@ export const toggleLike = async (req, res) => {
 
     const existingPost = await Post.findById(postId).select('likes likeReactions author');
     if (!existingPost) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    // 🚫 Strict block: can't react to a post whose author is blocked either way
+    const { hidden } = await getBlockedIdSets(userId);
+    if (existingPost.author && existingPost.author.toString() !== userId && hidden.includes(existingPost.author.toString())) {
       return res.status(404).json({ success: false, message: "Post not found" });
     }
 
@@ -94,7 +102,10 @@ export const toggleLike = async (req, res) => {
     const viewer = await User.findById(userId).select("following");
     const followingIds = new Set((viewer?.following || []).map(id => id.toString()));
 
-    const { list: likedByWithReaction, counts: reactionCounts } = attachReactions(populatedPost);
+    const { list: likedByWithReaction, counts: reactionCounts } = attachReactions({
+      likes: populatedPost.likes.filter(u => !hidden.includes(String(u._id))),
+      likeReactions: populatedPost.likeReactions,
+    });
     const likedByWithMutual = likedByWithReaction.map(obj => ({
       ...obj,
       isFollowedByViewer: followingIds.has(obj._id.toString()),
@@ -179,10 +190,17 @@ export const getPostLikers = async (req, res) => {
       return res.status(404).json({ success: false, message: "Post not found" });
     }
 
+    // 🚫 Strict block: hide the post and drop blocked users from the likers list
+    const { hidden } = await getBlockedIdSets(viewerId);
+    if (post.author && post.author.toString() !== viewerId.toString() && hidden.includes(post.author.toString())) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+    const visibleLikes = post.likes.filter(u => !hidden.includes(String(u._id)));
+
     const viewer = await User.findById(viewerId).select("following");
     const followingIds = new Set((viewer?.following || []).map(id => id.toString()));
 
-    const { list: likedByWithReaction, counts: reactionCounts } = attachReactions(post);
+    const { list: likedByWithReaction, counts: reactionCounts } = attachReactions({ likes: visibleLikes, likeReactions: post.likeReactions });
     const likedByWithMutual = likedByWithReaction.map(obj => ({
       ...obj,
       isFollowedByViewer: followingIds.has(obj._id.toString()),
@@ -197,7 +215,7 @@ export const getPostLikers = async (req, res) => {
     res.status(200).json({
       success:          true,
       likedBy:          likedByWithMutual,
-      totalLikes:       post.likes.length,
+      totalLikes:       visibleLikes.length,
       reactionCounts,   // e.g. { like: 4, love: 2, haha: 1 }
       mutualLikesCount, // ← how many likers the viewer follows, if you want to show "X mutual" separately
     });

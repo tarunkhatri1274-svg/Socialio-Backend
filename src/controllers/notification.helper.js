@@ -3,6 +3,7 @@ import Notification from "../models/notifications/notification.model.js";
 import NotificationSettings from "../models/notificationsettings/notification.settings.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { sendPushToUser } from "../utils/pushNotification.js";
+import { isBlockedEitherWay } from "../utils/blockHelper.js";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Category-level toggle map (existing behavior — unchanged)
@@ -93,6 +94,11 @@ export const createNotification = async ({
       return null;
     }
     if (recipientId.toString() === senderId.toString()) {
+      return null;
+    }
+
+    // Gate 0: strict block — never notify across a block (either direction)
+    if (await isBlockedEitherWay(recipientId, senderId)) {
       return null;
     }
 

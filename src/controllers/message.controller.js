@@ -12,6 +12,7 @@ import {
   deleteFileByUrl,
 } from '../config/gridfs.js';
 import { createNotification } from './notification.helper.js';
+import { getBlockedIdSets, isBlockedEitherWay } from '../utils/blockHelper.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Helper: build a stable chatId from two user ids
@@ -103,6 +104,10 @@ export const createMessage = async (req, res) => {
     if (to && to.toString() === senderId.toString()) {
       return res.status(400).json({ message: "Cannot message yourself" });
     }
+    // 🚫 Strict block: no messages across a block (either direction)
+    if (!isSystem && to && (await isBlockedEitherWay(senderId, to))) {
+      return res.status(403).json({ message: "You can't send messages to this user" });
+    }
     let convo = null;
     if (!isSystem && to) {
       convo = await getOrCreateConversation({ chatId, senderId, recipientId: to });
@@ -190,6 +195,15 @@ export const getMessages = async (req, res) => {
   try {
     const { chatId } = req.params;
     const userId = req.user._id;
+
+    // 🚫 Strict block: a blocked 1:1 chat returns nothing
+    const dm = /^([a-f0-9]{24})_([a-f0-9]{24})$/i.exec(chatId);
+    if (dm) {
+      const other = dm[1] === userId.toString() ? dm[2] : dm[1];
+      if (other !== userId.toString() && (await isBlockedEitherWay(userId, other))) {
+        return res.status(200).json([]);
+      }
+    }
 
     const messages = await Message.find({
       chatId,
@@ -507,6 +521,10 @@ export const forwardMessage = async (req, res) => {
     const message = await Message.findById(messageId);
     if (!message) return res.status(404).json({ message: "Message not found" });
 
+    // 🚫 Strict block
+    if (to && (await isBlockedEitherWay(userId, to))) {
+      return res.status(403).json({ message: "You can't send messages to this user" });
+    }
     const convo = await getOrCreateConversation({ chatId: toChatId, senderId: userId, recipientId: to });
 
     const forwardedMessage = new Message({
@@ -671,7 +689,9 @@ export const getInbox = async (req, res) => {
     const userId = req.user._id || req.user.id;
 
     const me = await User.findById(userId).select('blockedUsers following');
-    const myBlockedIds = new Set((me?.blockedUsers || []).map(id => id.toString()));
+    // 🚫 hide people I blocked AND people who blocked me
+    const { hidden } = await getBlockedIdSets(userId);
+    const myBlockedIds = new Set(hidden);
     const followingIds = (me?.following || []).map(id => id.toString());
 
     const conversations = await Conversation.find({
@@ -734,8 +754,8 @@ export const getMessageRequests = async (req, res) => {
   try {
     const userId = req.user._id || req.user.id;
 
-    const me = await User.findById(userId).select('blockedUsers');
-    const myBlockedIds = new Set((me?.blockedUsers || []).map(id => id.toString()));
+    const { hidden } = await getBlockedIdSets(userId);
+    const myBlockedIds = new Set(hidden); // blocked either way
 
     const requests = await Conversation.find({
       recipient: userId,
@@ -814,8 +834,9 @@ export const declineMessageRequest = async (req, res) => {
 // COUNTS — unread inbox messages + pending requests (for nav badges)
 // ─────────────────────────────────────────────────────────────────────────
 async function getUnreadCountForUser(userId) {
+  const { hidden } = await getBlockedIdSets(userId);
   const conversations = await Conversation.find({
-    members: userId,
+    members: { $eq: userId, $nin: hidden },
     status: { $in: ['none', 'accepted'] },
   }).lean();
 
@@ -827,7 +848,8 @@ async function getUnreadCountForUser(userId) {
 }
 
 async function getRequestCountForUser(userId) {
-  return Conversation.countDocuments({ recipient: userId, status: 'pending' });
+  const { hidden } = await getBlockedIdSets(userId);
+  return Conversation.countDocuments({ recipient: userId, status: 'pending', initiator: { $nin: hidden } });
 }
 
 export const getInboxCounts = async (req, res) => {
@@ -854,7 +876,8 @@ export const getRecentChatUsers = async (req, res) => {
     const MIN_RESULTS = 10;
 
     const me = await User.findById(userId).select('blockedUsers following');
-    const myBlockedIds = new Set((me?.blockedUsers || []).map(id => id.toString()));
+    const { hidden } = await getBlockedIdSets(userId);
+    const myBlockedIds = new Set(hidden); // blocked either way
 
     // 1) Most recent 1:1 conversations (real activity, not virtual "tap to
     //    message" rows — those aren't "recent" in any meaningful sense)

@@ -4,6 +4,7 @@ import Notification from "../models/notifications/notification.model.js";
 import { MAX_POST_IMAGE_BYTES, MAX_POST_VIDEO_BYTES, deleteFileByUrl, deleteFileById, extractFileMeta } from "../config/gridfs.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
+import { getBlockedIdSets, isBlockedEitherWay } from "../utils/blockHelper.js";
 
 // ── Can `viewerId` see this post, given it's a collaboration and the
 // viewer is looking at it via COLLABORATOR B's profile (not the
@@ -394,7 +395,10 @@ export const getPosts = async (req, res) => {
     const skip =
       (page - 1) * limit;
 
-    const posts = await Post.find()
+    // 🚫 Strict block: hide posts by anyone blocked either way
+    const { hidden } = await getBlockedIdSets(req.user._id || req.user.id);
+
+    const posts = await Post.find({ author: { $nin: hidden } })
 
       .populate(
         "author",
@@ -634,6 +638,12 @@ export const getUserPosts = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid user ID" });
     }
 
+    // 🚫 Strict block: no posts across a block, in either direction
+    const { hidden } = await getBlockedIdSets(viewerId);
+    if (String(targetId) !== String(viewerId) && hidden.includes(String(targetId))) {
+      return res.json({ success: true, posts: [] });
+    }
+
     const [ownPosts, collabPosts] = await Promise.all([
       Post.find({ author: targetId })
         .populate("author", "username profilePic isPrivate")
@@ -669,7 +679,9 @@ export const getUserPosts = async (req, res) => {
       return obj;
     });
 
-    const merged = [...ownPostsFlagged, ...visibleCollabPosts].sort(
+    const merged = [...ownPostsFlagged, ...visibleCollabPosts]
+      .filter((p) => !hidden.includes(String(p.author?._id ?? p.author)))
+      .sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
     );
 
@@ -694,7 +706,8 @@ export const getFeed = async (req, res) => {
 
     const currentUser = await User.findById(userId).select("following blockedUsers mutedUsers");
     const followingIds = currentUser?.following || [];
-    const blockedIds = currentUser?.blockedUsers || [];
+    // 🚫 Strict block: hide authors I blocked AND authors who blocked me
+    const { hidden: blockedIds } = await getBlockedIdSets(userId);
 
     const mutedPostAuthorIds = skipMuteFilter
       ? new Set()
@@ -1120,6 +1133,11 @@ export const getPostById = async (req, res) => {
     }
 
     const authorId = post.author?._id?.toString();
+    // 🚫 Strict block
+    if (authorId && authorId !== viewerId.toString() && (await isBlockedEitherWay(viewerId, authorId))) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
     const isOwner = authorId === viewerId.toString();
 
     const isAcceptedCollaborator = (post.collaborators || []).some(

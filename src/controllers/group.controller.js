@@ -6,6 +6,7 @@ import { getIO, onlineUsers } from "../config/sockets.js";
 import { createNotification } from "./notification.helper.js";
 import { sendPushToUser } from "../utils/pushNotification.js";
 import { deleteFileByUrl } from "../config/gridfs.js";
+import { getBlockedIdSets } from "../utils/blockHelper.js";
 
 const GROUP_PREFIX = "group_";
 
@@ -56,8 +57,10 @@ export const createGroup = async (req, res) => {
       return res.status(400).json({ success: false, message: "Group name is required" });
     }
 
+    // 🚫 Strict block: can't add anyone who is blocked either way
+    const { hidden: blockedWithCreator } = await getBlockedIdSets(creatorId);
     const uniqueMemberIds = [...new Set((memberIds || []).map(String))].filter(
-      (id) => id !== creatorId.toString()
+      (id) => id !== creatorId.toString() && !blockedWithCreator.includes(id)
     );
 
     if (uniqueMemberIds.length === 0) {
@@ -137,7 +140,10 @@ export const inviteToGroup = async (req, res) => {
   try {
     const userId = req.user._id;
     const { chatId } = req.params;
-    const { memberIds = [] } = req.body;
+    const { memberIds: rawMemberIds = [] } = req.body;
+    // 🚫 Strict block: can't invite anyone who is blocked either way
+    const { hidden: blockedWithMe } = await getBlockedIdSets(userId);
+    const memberIds = (rawMemberIds || []).map(String).filter((id) => !blockedWithMe.includes(id));
 
     const group = await Group.findOne({ chatId });
     if (!group) return res.status(404).json({ success: false, message: "Group not found" });
@@ -211,7 +217,14 @@ export const getGroupRequests = async (req, res) => {
       .sort({ lastMessageAt: -1 })
       .lean();
 
-    const requests = groups.map((g) => {
+    // 🚫 Strict block: hide invites sent by people blocked either way
+    const { hidden } = await getBlockedIdSets(userId);
+    const requests = groups
+      .filter((g) => {
+        const mine = g.members.find((m) => m.user._id.toString() === userId.toString());
+        return !hidden.includes(String(mine?.invitedBy?._id ?? mine?.invitedBy));
+      })
+      .map((g) => {
       const me = g.members.find((m) => m.user._id.toString() === userId.toString());
       return {
         chatId: g.chatId,
