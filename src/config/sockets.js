@@ -10,14 +10,16 @@ const pendingCalls = new Map();
 const sendPush = async (userId, data) => {
   try {
     const u = await User.findById(userId).select("fcmToken");
+    console.log("[call push]", data.type, "to", String(userId), "hasToken:", !!u?.fcmToken);
     if (!u?.fcmToken) return;
-    await admin.messaging().send({
+    const id = await admin.messaging().send({
       token: u.fcmToken,
-      data, // DATA-ONLY: do not add a "notification" key. All values must be strings.
+      data, // data-only, all values must be strings
       android: { priority: "high", ttl: 45000 },
     });
+    console.log("[call push] sent", id);
   } catch (e) {
-    console.error("call push failed:", e.message);
+    console.error("call push failed:", e.code, e.message);
   }
 };
 
