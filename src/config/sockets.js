@@ -2,11 +2,39 @@ import { Server } from "socket.io";
 import Story from "../models/story/story.model.js";
 import User from "../models/user/user.model.js";
 import { isBlockedEitherWay } from "../utils/blockCheck.js";
-
+import admin from "firebase-admin";
 let io;
 export const onlineUsers = new Map();
 const liveRooms = new Map();
+const pendingCalls = new Map();
+const sendPush = async (userId, data) => {
+  try {
+    const u = await User.findById(userId).select("fcmToken");
+    if (!u?.fcmToken) return;
+    await admin.messaging().send({
+      token: u.fcmToken,
+      data, // DATA-ONLY: do not add a "notification" key. All values must be strings.
+      android: { priority: "high", ttl: 45000 },
+    });
+  } catch (e) {
+    console.error("call push failed:", e.message);
+  }
+};
 
+const clearPending = (receiverId) => {
+  const p = pendingCalls.get(receiverId);
+  if (p) {
+    clearTimeout(p.timer);
+    pendingCalls.delete(receiverId);
+  }
+};
+
+// used by the REST "Decline" route (when the app is closed)
+export const rejectCallFromRest = (receiverId, callerId) => {
+  clearPending(receiverId);
+  const s = onlineUsers.get(callerId?.toString());
+  if (s) io.to(s).emit("callRejected");
+};
 // ── LIVE STORY CLEANUP ──────────────────────────────────────────────────
 // A live story's Story doc only means something while its in-memory room
 // (liveRooms) exists. Rooms vanish whenever the server restarts or spins
@@ -462,31 +490,72 @@ io = new Server(httpServer, {
       if (recipientSocketId) io.to(recipientSocketId).emit("liveOffer", { from: socket.userId, offer });
     });
 
-    socket.on("callOffer", ({ to, offer, type }) => {
-      const recipientSocketId = onlineUsers.get(to?.toString());
-      const fromUserId = [...onlineUsers.entries()].find(([, sid]) => sid === socket.id)?.[0];
-      if (recipientSocketId) io.to(recipientSocketId).emit("callOffer", { from: fromUserId, offer, type });
-    });
+socket.on("callOffer", async ({ to, offer, type }) => {
+  const from = socket.userId;
+  if (!from || !to) return;
+  const target = to.toString();
 
-    socket.on("liveAnswer", ({ to, answer }) => {
-      const recipientSocketId = onlineUsers.get(to?.toString());
-      const fromUserId = [...onlineUsers.entries()].find(([, sid]) => sid === socket.id)?.[0];
-      if (recipientSocketId) {
-        io.to(recipientSocketId).emit("liveAnswer", { from: fromUserId, answer });
-      }
-    });
+  clearPending(target);
+  const entry = { offer, from, type, ice: [] };
+entry.timer = setTimeout(() => {
+  pendingCalls.delete(target);
+  sendPush(target, { type: "call_cancelled", from });
+  const cs = onlineUsers.get(from);
+  if (cs) io.to(cs).emit("callNoAnswer");
+  const rs = onlineUsers.get(target);
+  if (rs) io.to(rs).emit("callCancelled");
+}, 45000);
+  pendingCalls.set(target, entry);
 
-    socket.on("callRejected",  ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callRejected"); });
+  const sid = onlineUsers.get(target);
+  if (sid) io.to(sid).emit("callOffer", { from, offer, type });
+
+  // ALWAYS push too: a backgrounded phone often still looks "online"
+  const caller = await User.findById(from).select("username profilePic");
+  sendPush(target, {
+    type: "incoming_call",
+    from: String(from),
+    callType: type || "audio",
+    callerName: caller?.username || "Someone",
+    callerPic: caller?.profilePic || "",
+  });
+});
+
+// receiver's app calls this once its listeners are attached
+socket.on("checkPendingCall", () => {
+  const p = pendingCalls.get(socket.userId);
+  if (!p) return;
+  socket.emit("callOffer", { from: p.from, offer: p.offer, type: p.type });
+  p.ice.forEach((candidate) => socket.emit("iceCandidate", { from: p.from, candidate }));
+});
+
+socket.on("liveAnswer", ({ to, answer }) => {
+  clearPending(socket.userId); // receiver answered
+  const rid = onlineUsers.get(to?.toString());
+  if (rid) io.to(rid).emit("liveAnswer", { from: socket.userId, answer });
+});
+
+  socket.on("callRejected", ({ to }) => {
+  clearPending(socket.userId);
+  const s = onlineUsers.get(to?.toString());
+  if (s) io.to(s).emit("callRejected");
+});
     socket.on("callEnded",     ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callEnded"); });
-    socket.on("callCancelled", ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callCancelled"); });
+    socket.on("callCancelled", ({ to }) => {
+  clearPending(to?.toString());
+  sendPush(to, { type: "call_cancelled", from: socket.userId });
+  const s = onlineUsers.get(to?.toString());
+  if (s) io.to(s).emit("callCancelled");
+});
     socket.on("callBusy",      ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callBusy"); });
     socket.on("liveCancelled", ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("liveCancelled"); });
     socket.on("callConnected", ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callConnected"); });
-    socket.on("iceCandidate", ({ to, candidate }) => {
-      const recipientSocketId = onlineUsers.get(to?.toString());
-      const fromUserId = [...onlineUsers.entries()].find(([, sid]) => sid === socket.id)?.[0];
-      if (recipientSocketId) io.to(recipientSocketId).emit("iceCandidate", { from: fromUserId, candidate });
-    });
+socket.on("iceCandidate", ({ to, candidate }) => {
+  const p = pendingCalls.get(to?.toString());
+  if (p && p.from === socket.userId) p.ice.push(candidate); // buffer for late joiner
+  const rid = onlineUsers.get(to?.toString());
+  if (rid) io.to(rid).emit("iceCandidate", { from: socket.userId, candidate });
+});
 
     // ── NEW STORY ──────────────────────────────────────────────────────────
     socket.on("newStory", ({ authorId, storyId }) => {
@@ -495,6 +564,14 @@ io = new Server(httpServer, {
 
     // ── DISCONNECT ─────────────────────────────────────────────────────────
     socket.on("disconnect", () => {
+for (const [rid, p] of pendingCalls.entries()) {
+  if (p.from === socket.userId) {
+    clearPending(rid);
+    sendPush(rid, { type: "call_cancelled", from: socket.userId });
+    const rs = onlineUsers.get(rid);
+    if (rs) io.to(rs).emit("callCancelled");
+  }
+}
       for (const [userId, socketId] of onlineUsers.entries()) {
         if (socketId === socket.id) {
           onlineUsers.delete(userId);

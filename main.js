@@ -28,6 +28,7 @@ import { startNotificationExpiryJob } from "./src/jobs/expire.notification.js"; 
 import MemoryRouter from "./src/routes/memory.routes.js";
 import MuteRouter from "./src/routes/mute.routes.js"; // ← added
 import FileRouter from "./src/routes/file.routes.js";
+import CallRouter from "./src/routes/call.routes.js";
 const PORT=process.env.PORT
 const app        = express();
 const httpServer = createServer(app);
@@ -98,6 +99,7 @@ app.use("/api/groups", GroupRouter);
 app.use("/api/memories", MemoryRouter); // ← added
 app.use("/api/mute", MuteRouter); // ← added
 app.use("/files", FileRouter); // public, no auth
+app.use("/api/calls", CallRouter);
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
   res.send("Backend working");
