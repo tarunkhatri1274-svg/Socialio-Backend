@@ -10,7 +10,7 @@ const pendingCalls = new Map();
 const sendPush = async (userId, data) => {
   try {
     const u = await User.findById(userId).select("fcmToken");
-    console.log("[call push]", data.type, "to", String(userId), "hasToken:", !!u?.fcmToken);
+    
     if (!u?.fcmToken) return;
     const id =await getMessaging().send({
       token: u.fcmToken,
