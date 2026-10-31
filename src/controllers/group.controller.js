@@ -327,8 +327,13 @@ export const exitGroup = async (req, res) => {
     );
     if (!member) return res.status(404).json({ success: false, message: "You're not in this group" });
 
-    member.status = "declined";
+      member.status = "declined";
     member.leftAt = new Date();
+
+    // delete this user's wallpaper file; they no longer belong to the group
+    const myWp = group.wallpapers?.get(userId.toString());
+    if (myWp?.type === "image" && myWp.value) await destroyMediaAsset({ url: myWp.value });
+    group.wallpapers?.delete(userId.toString());
 
     const me = await User.findById(userId).select("username");
     const remainingAdmins = group.members.some(
@@ -366,6 +371,10 @@ export const exitGroup = async (req, res) => {
 
     const stillHasMembers = group.members.some((m) => m.status === "accepted");
     if (!stillHasMembers) {
+      if (group.avatar) await destroyMediaAsset({ url: group.avatar });
+      for (const wp of group.wallpapers?.values() || []) {
+        if (wp?.type === "image" && wp.value) await destroyMediaAsset({ url: wp.value });
+      }
       const remainingMessages = await Message.find({ chatId });
       const withMedia = remainingMessages.filter((m) => m.media?.url);
       await Promise.all(withMedia.map((m) => destroyMediaAsset(m.media)));
@@ -407,6 +416,12 @@ export const removeGroupMember = async (req, res) => {
 
     member.status = "declined";
     member.leftAt = new Date();
+
+    const removedWp = group.wallpapers?.get(memberId.toString());
+    if (removedWp?.type === "image" && removedWp.value) {
+      await destroyMediaAsset({ url: removedWp.value });
+    }
+    group.wallpapers?.delete(memberId.toString());
     await group.save();
 
     const actor = await User.findById(userId).select("username");

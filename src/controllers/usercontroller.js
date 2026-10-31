@@ -15,6 +15,7 @@ import { sendOtpEmail, generateOtp } from "../utils/sendemail.js";
 import { getIO, onlineUsers } from "../config/sockets.js";
 import { canViewCollabPost } from "./media.controllers.js";
 import { deleteFileByUrl } from "../config/gridfs.js";
+import { sweepOrphanFiles } from "../utils/sweepOrphans.js";
 import jwt from "jsonwebtoken";
 import env from "../services/simpleENV.js";
 import { getBlockedIdSets, isBlockedEitherWay } from "../utils/blockHelper.js";
@@ -28,7 +29,9 @@ const destroyMessageMedia = async (media) => {
 const destroyMemoryItemMedia = async (media) => {
   if (media?.url) await deleteFileByUrl(media.url);
 };
-
+const destroyGroupWallpaper = async (wp) => {
+  if (wp?.type === "image" && wp.value) await deleteFileByUrl(wp.value);
+};
 export const sendOtp = async (req, res) => {
   try {
     const email = req.body.email?.toLowerCase().trim();
@@ -427,7 +430,8 @@ export const deleteAccount = async (req, res) => {
     // ── 3. Stories ───────────────────────────────────────────────────
     const stories = await Story.find({ author: userId });
     for (const story of stories) {
-      if (story.media?.url) {
+      // a repost shares the ORIGINAL story's file, so never delete it here
+      if (story.media?.url && !story.repostOf) {
         await deleteFileByUrl(story.media.url);
       }
     }
@@ -462,7 +466,9 @@ export const deleteAccount = async (req, res) => {
     for (const group of myGroups) {
       const member = group.members.find((m) => m.user.toString() === userId.toString());
       if (!member) continue;
-
+      // remove this user's own wallpaper file from the group
+      await destroyGroupWallpaper(group.wallpapers?.get(userId.toString()));
+      group.wallpapers?.delete(userId.toString());
       const wasAcceptedAdmin = member.status === "accepted" && member.role === "admin";
       member.status = "declined";
       member.leftAt = new Date();
@@ -483,7 +489,11 @@ export const deleteAccount = async (req, res) => {
 
       const stillHasMembers = group.members.some((m) => m.status === "accepted");
 
-      if (!stillHasMembers) {
+            if (!stillHasMembers) {
+        if (group.avatar) await deleteFileByUrl(group.avatar);
+        for (const wp of group.wallpapers?.values() || []) {
+          await destroyGroupWallpaper(wp);
+        }
         // No accepted members left — safe to fully wipe the group,
         // its messages, and their stored media.
         const groupMessages = await Message.find({ chatId: group.chatId });
@@ -529,6 +539,13 @@ export const deleteAccount = async (req, res) => {
     await Message.deleteMany({ $or: [{ user: userId }, { to: userId }] });
 
     // ── 8. Conversations / notifications ──────────────────────────────
+        // ── 8a. Chat wallpapers (stored in GridFS inside Conversation.wallpapers)
+    const myConvos = await Conversation.find({ members: userId }).select("wallpapers");
+    for (const c of myConvos) {
+      for (const wp of c.wallpapers?.values() || []) {
+        if (wp?.type === "image" && wp.value) await deleteFileByUrl(wp.value);
+      }
+    }
     await Conversation.updateMany(
       { members: userId },
       { $pull: { members: userId, clearedFor: userId } }
@@ -568,7 +585,7 @@ export const deleteAccount = async (req, res) => {
     } catch {}
 
     await user.deleteOne();
-
+sweepOrphanFiles().catch((e) => console.error("[sweep] failed:", e.message));
     res.json({ message: "Account deleted successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
