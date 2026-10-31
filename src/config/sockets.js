@@ -2,7 +2,7 @@ import { Server } from "socket.io";
 import Story from "../models/story/story.model.js";
 import User from "../models/user/user.model.js";
 import { isBlockedEitherWay } from "../utils/blockCheck.js";
-import admin from "firebase-admin";
+import { getMessaging } from "firebase-admin/messaging";
 let io;
 export const onlineUsers = new Map();
 const liveRooms = new Map();
@@ -12,7 +12,7 @@ const sendPush = async (userId, data) => {
     const u = await User.findById(userId).select("fcmToken");
     console.log("[call push]", data.type, "to", String(userId), "hasToken:", !!u?.fcmToken);
     if (!u?.fcmToken) return;
-    const id = await admin.messaging().send({
+    const id =await getMessaging().send({
       token: u.fcmToken,
       data, // data-only, all values must be strings
       android: { priority: "high", ttl: 45000 },

@@ -1,7 +1,7 @@
 import express from "express";
 import { rejectCallFromRest } from "../config/sockets.js"; // adjust path
 import { protect } from "../middlewares/auth.middleware.js";             // use YOUR auth middleware name
-import admin from "firebase-admin";
+import { getMessaging } from "firebase-admin/messaging";
 import User from "../models/user/user.model.js"; // adjust path if needed
 
 
@@ -13,7 +13,7 @@ CallRouter.get("/test-push", async (req, res) => {
     if (!u) return res.json({ step: "user", error: "user not found" });
     if (!u.fcmToken) return res.json({ step: "token", error: "this user has NO fcmToken saved", user: u.username });
 
-    const id = await admin.messaging().send({
+    const id = await getMessaging().send({
       token: u.fcmToken,
       data: { type: "incoming_call", from: "test", callType: "audio", callerName: "Test Call", callerPic: "" },
       android: { priority: "high", ttl: 45000 },
