@@ -1,6 +1,6 @@
 import express from "express";
 import { rejectCallFromRest } from "../config/sockets.js";
-import { protect } from "../middleware/auth.js";
+import { protect } from "../middlewares/auth.middleware.js";
 
 const CallRouter = express.Router();
 
