@@ -501,7 +501,7 @@ socket.on("callOffer", async ({ to, offer, type }) => {
   const entry = { offer, from, type, ice: [] };
 entry.timer = setTimeout(() => {
   pendingCalls.delete(target);
-  sendPush(target, { type: "call_cancelled", from });
+  sendPush(target, { type: "call_cancelled", callerId: String(from) });
   const cs = onlineUsers.get(from);
   if (cs) io.to(cs).emit("callNoAnswer");
   const rs = onlineUsers.get(target);
@@ -516,7 +516,7 @@ entry.timer = setTimeout(() => {
   const caller = await User.findById(from).select("username profilePic");
   sendPush(target, {
     type: "incoming_call",
-    from: String(from),
+    callerId: String(from),
     callType: type || "audio",
     callerName: caller?.username || "Someone",
     callerPic: caller?.profilePic || "",
@@ -545,7 +545,7 @@ socket.on("liveAnswer", ({ to, answer }) => {
     socket.on("callEnded",     ({ to }) => { const s = onlineUsers.get(to?.toString()); if (s) io.to(s).emit("callEnded"); });
     socket.on("callCancelled", ({ to }) => {
   clearPending(to?.toString());
-  sendPush(to, { type: "call_cancelled", from: socket.userId });
+ sendPush(to, { type: "call_cancelled", callerId: String(socket.userId) });
   const s = onlineUsers.get(to?.toString());
   if (s) io.to(s).emit("callCancelled");
 });
@@ -569,7 +569,7 @@ socket.on("iceCandidate", ({ to, candidate }) => {
 for (const [rid, p] of pendingCalls.entries()) {
   if (p.from === socket.userId) {
     clearPending(rid);
-    sendPush(rid, { type: "call_cancelled", from: socket.userId });
+    sendPush(rid, { type: "call_cancelled", callerId: String(socket.userId) });
     const rs = onlineUsers.get(rid);
     if (rs) io.to(rs).emit("callCancelled");
   }

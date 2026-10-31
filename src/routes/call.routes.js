@@ -15,7 +15,7 @@ CallRouter.get("/test-push", async (req, res) => {
 
     const id = await getMessaging().send({
       token: u.fcmToken,
-      data: { type: "incoming_call", from: "test", callType: "audio", callerName: "Test Call", callerPic: "" },
+      data: { type: "incoming_call", callerId: "test", callType: "audio", callerName: "Test Call", callerPic: "" },
       android: { priority: "high", ttl: 45000 },
     });
     res.json({ step: "sent", messageId: id, user: u.username });
