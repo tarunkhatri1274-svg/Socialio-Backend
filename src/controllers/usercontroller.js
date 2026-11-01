@@ -18,7 +18,7 @@ import { deleteFileByUrl } from "../config/gridfs.js";
 import { sweepOrphanFiles } from "../utils/sweepOrphans.js";
 import jwt from "jsonwebtoken";
 import env from "../services/simpleENV.js";
-import { getBlockedIdSets, isBlockedEitherWay } from "../utils/blockHelper.js";
+import { getBlockedIdSets, isBlockedEitherWay, emitListPerViewer } from "../utils/blockHelper.js";
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── Helpers: delete stored files (MongoDB GridFS). deleteFileByUrl never
@@ -844,7 +844,7 @@ export const followUser = async (req, res) => {
     const updatedTarget = await User.findById(targetUserId)
       .select("followers")
       .populate("followers", "_id username profilePic");
-    io.to(`user:${targetUserId}`).emit("followersList", {
+    await emitListPerViewer(io, `user:${targetUserId}`, "followersList", "followers", {
       userId: targetUserId,
       followers: updatedTarget.followers,
     });
@@ -852,7 +852,7 @@ export const followUser = async (req, res) => {
     const updatedCurrent = await User.findById(currentUserId)
       .select("following")
       .populate("following", "_id username profilePic");
-    io.to(`user:${currentUserId}`).emit("followingList", {
+    await emitListPerViewer(io, `user:${currentUserId}`, "followingList", "following", {
       userId: currentUserId,
       following: updatedCurrent.following,
     });
@@ -881,7 +881,7 @@ export const unfollowUser = async (req, res) => {
     const updatedTarget = await User.findById(targetUserId)
       .select("followers")
       .populate("followers", "_id username profilePic");
-    io.to(`user:${targetUserId}`).emit("followersList", {
+    await emitListPerViewer(io, `user:${targetUserId}`, "followersList", "followers", {
       userId: targetUserId,
       followers: updatedTarget.followers,
     });
@@ -889,7 +889,7 @@ export const unfollowUser = async (req, res) => {
     const updatedCurrent = await User.findById(currentUserId)
       .select("following")
       .populate("following", "_id username profilePic");
-    io.to(`user:${currentUserId}`).emit("followingList", {
+    await emitListPerViewer(io, `user:${currentUserId}`, "followingList", "following", {
       userId: currentUserId,
       following: updatedCurrent.following,
     });

@@ -206,6 +206,7 @@ io = new Server(httpServer, {
     socket.on("register", (userId) => {
       if (userId) {
         socket.userId = userId.toString();
+        socket.data.userId = userId.toString();
         socket.join(`user:${userId}`);
         onlineUsers.set(userId.toString(), socket.id);
         io.emit("onlineUsers", Array.from(onlineUsers.keys()));

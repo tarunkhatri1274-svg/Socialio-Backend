@@ -43,3 +43,30 @@ export const isPostBlockedFor = async (post, viewerId) => {
   if (!authorId || String(authorId) === String(viewerId)) return false;
   return isBlockedEitherWay(viewerId, authorId);
 };
+
+/**
+ * Live list updates (followersList / followingList) are sent to a whole socket room.
+ * This sends each viewer in the room THEIR OWN filtered copy, so people blocked in
+ * either direction never reappear. Event name and payload shape are unchanged.
+ */
+export const emitListPerViewer = async (io, room, event, listKey, payload) => {
+  try {
+    const sockets = await io.in(room).fetchSockets();
+    await Promise.all(
+      sockets.map(async (s) => {
+        const viewerId = s.data?.userId || s.userId;
+        let list = payload[listKey] || [];
+        if (viewerId) {
+          const { hidden } = await getBlockedIdSets(viewerId);
+          list = hidden.includes(String(payload.userId))
+            ? []
+            : list.filter((u) => !hidden.includes(String(u._id ?? u)));
+        }
+        io.to(s.id).emit(event, { ...payload, [listKey]: list });
+      })
+    );
+  } catch (e) {
+    console.error("emitListPerViewer failed:", e.message);
+    io.to(room).emit(event, payload); // fall back to the original behaviour
+  }
+};
