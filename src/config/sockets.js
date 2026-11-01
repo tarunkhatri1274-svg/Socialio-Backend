@@ -2,6 +2,7 @@ import { Server } from "socket.io";
 import Story from "../models/story/story.model.js";
 import User from "../models/user/user.model.js";
 import { isBlockedEitherWay } from "../utils/blockCheck.js";
+import { getBlockedIdSets } from "../utils/blockHelper.js";
 import { getMessaging } from "firebase-admin/messaging";
 let io;
 export const onlineUsers = new Map();
@@ -244,7 +245,16 @@ io = new Server(httpServer, {
           }
         }
 
-        socket.emit("followersList", { userId, followers: user.followers });
+        // 🚫 Strict block: hide the list across a block, and drop blocked users from it
+        const { hidden } = viewerId ? await getBlockedIdSets(viewerId) : { hidden: [] };
+        if (userId !== viewerId && hidden.includes(String(userId))) {
+          return socket.emit("followersList", { userId, followers: [], error: "not_found" });
+        }
+        const visibleFollowers = (user.followers || []).filter(
+          (f) => !hidden.includes(String(f._id ?? f))
+        );
+
+        socket.emit("followersList", { userId, followers: visibleFollowers });
       } catch (e) {
         console.error("getFollowers socket error:", e.message);
         socket.emit("followersList", { userId, followers: [] });
@@ -269,7 +279,16 @@ io = new Server(httpServer, {
           }
         }
 
-        socket.emit("followingList", { userId, following: user.following });
+        // 🚫 Strict block: hide the list across a block, and drop blocked users from it
+        const { hidden } = viewerId ? await getBlockedIdSets(viewerId) : { hidden: [] };
+        if (userId !== viewerId && hidden.includes(String(userId))) {
+          return socket.emit("followingList", { userId, following: [], error: "not_found" });
+        }
+        const visibleFollowing = (user.following || []).filter(
+          (f) => !hidden.includes(String(f._id ?? f))
+        );
+
+        socket.emit("followingList", { userId, following: visibleFollowing });
       } catch (e) {
         console.error("getFollowing socket error:", e.message);
         socket.emit("followingList", { userId, following: [] });
@@ -287,7 +306,12 @@ io = new Server(httpServer, {
           .populate("followRequests", "_id username profilePic");
 
         if (!user) return socket.emit("followRequestsList", { requests: [] });
-        socket.emit("followRequestsList", { requests: user.followRequests });
+        // 🚫 Strict block: never show requests from blocked users
+        const { hidden } = await getBlockedIdSets(userId);
+        const visibleRequests = (user.followRequests || []).filter(
+          (r) => !hidden.includes(String(r._id ?? r))
+        );
+        socket.emit("followRequestsList", { requests: visibleRequests });
       } catch (e) {
         console.error("getFollowRequests socket error:", e.message);
         socket.emit("followRequestsList", { requests: [] });
