@@ -20,7 +20,25 @@ import jwt from "jsonwebtoken";
 import env from "../services/simpleENV.js";
 import { getBlockedIdSets, isBlockedEitherWay, emitListPerViewer } from "../utils/blockHelper.js";
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+import crypto from "crypto";
 
+const MAX_OTP_ATTEMPTS = 5;
+const USERNAME_RE = /^[a-z0-9._]{3,20}$/;
+const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
+const safeEqual = (a, b) => {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Fields that must never be sent to any client
+const PRIVATE_FIELDS =
+  "-password -otp -otpExpires -otpLastSentAt -otpAttempts -isOtpVerified -resetOtpVerified " +
+  "-resetOtpVerifiedExpires -resetTokenHash -resetTokenExpires -signupVerifiedExpires " +
+  "-resetPasswordToken -resetPasswordExpires -googleId";
+// Extra fields hidden when viewing SOMEONE ELSE's profile
+const OTHERS_HIDDEN =
+  PRIVATE_FIELDS + " -fcmToken -fcmPlatform -blockedUsers -mutedUsers -recentSearches -savedPosts -email";
 // ── Helpers: delete stored files (MongoDB GridFS). deleteFileByUrl never
 // throws and ignores URLs that aren't /files/<id>. ─────────────────────────
 const destroyMessageMedia = async (media) => {
@@ -38,8 +56,9 @@ export const sendOtp = async (req, res) => {
     if (!email) return res.status(400).json({ message: "Email is required" });
 
     const existingUser = await User.findOne({ email });
+    if (existingUser?.username)
+      return res.status(409).json({ message: "This email is already registered. Please log in." });
 
-    // ✅ FIX: cooldown was previously missing entirely on this route
     const COOLDOWN_MS = 60 * 1000;
     if (existingUser?.otpLastSentAt && Date.now() - existingUser.otpLastSentAt < COOLDOWN_MS) {
       const waitSec = Math.ceil((COOLDOWN_MS - (Date.now() - existingUser.otpLastSentAt)) / 1000);
@@ -50,12 +69,7 @@ export const sendOtp = async (req, res) => {
     const hashedOtp = await bcrypt.hash(otp, 10);
     await User.findOneAndUpdate(
       { email },
-      {
-        email,
-        otp: hashedOtp,
-        otpExpires: Date.now() + 5 * 60 * 1000,
-        otpLastSentAt: Date.now(),
-      },
+      { email, otp: hashedOtp, otpExpires: Date.now() + 5 * 60 * 1000, otpLastSentAt: Date.now(), otpAttempts: 0 },
       { upsert: true, new: true }
     );
     await sendOtpEmail(email, otp);
@@ -64,37 +78,40 @@ export const sendOtp = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-
 export const verifyOtp = async (req, res) => {
   try {
     const email = req.body.email?.toLowerCase().trim();
-    const { otp } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: "User not found" });
-    if (!user.otpExpires || Date.now() > user.otpExpires)
-      return res.status(400).json({ message: "OTP expired" });
+    const otp = String(req.body.otp ?? "").trim();
+    if (!email || !otp) return res.status(400).json({ message: "Email and OTP are required" });
+
+    // atomic increment, so parallel requests can't exceed the limit
+    const user = await User.findOneAndUpdate({ email }, { $inc: { otpAttempts: 1 } }, { new: true });
+    if (!user || !user.otp || !user.otpExpires || Date.now() > user.otpExpires)
+      return res.status(400).json({ message: "OTP expired or invalid" });
+
+    if (user.otpAttempts > MAX_OTP_ATTEMPTS) {
+      await User.updateOne({ email }, { $unset: { otp: "", otpExpires: "" } });
+      return res.status(429).json({ message: "Too many attempts. Please request a new OTP." });
+    }
+
     const isMatch = await bcrypt.compare(otp, user.otp);
     if (!isMatch) return res.status(400).json({ message: "Invalid OTP" });
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
     await User.updateOne(
       { email },
       {
         $set: {
           isVerified: true,
-          isOtpVerified: true,
-          // ✅ FIX: also set the reset-scoped flag with its own short expiry,
-          // so this OTP verification event can be safely reused later
-          // ONLY within the reset-password window it was actually issued for.
-          resetOtpVerified: true,
-          resetOtpVerifiedExpires: Date.now() + 10 * 60 * 1000, // 10 min window
+          otpAttempts: 0,
+          signupVerifiedExpires: Date.now() + 30 * 60 * 1000,
+          resetTokenHash: sha256(resetToken),
+          resetTokenExpires: Date.now() + 10 * 60 * 1000,
         },
         $unset: { otp: "", otpExpires: "" },
       }
     );
-    res.json({
-      _id: user._id,
-      email: user.email,
-      token: generateToken.generateAccessToken(user._id),
-    });
+    res.json({ message: "OTP verified", email: user.email, resetToken });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -136,31 +153,27 @@ export const registerUser = async (req, res) => {
     if (!user) return res.status(404).json({ message: "Please verify email first" });
     if (!user.isVerified) return res.status(400).json({ message: "Email not verified. Please verify first." });
     if (user.username) return res.status(400).json({ message: "User already registered" });
+    if (!user.signupVerifiedExpires || Date.now() > user.signupVerifiedExpires)
+      return res.status(400).json({ message: "Verification expired. Please verify your email again." });
 
-    // Age validation
-    if (!req.body.age || isNaN(age)) {
-      return res.status(400).json({ message: "Age is required" });
-    }
-    if (age < 18) {
-      return res.status(403).json({ message: "You are not eligible to use Socialio" });
-    }
+    if (!password || password.length < 6)
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    if (!USERNAME_RE.test(username || ""))
+      return res.status(400).json({ message: "Username must be 3-20 characters: letters, numbers, . or _" });
+    if (!req.body.age || isNaN(age)) return res.status(400).json({ message: "Age is required" });
+    if (age < 18) return res.status(403).json({ message: "You are not eligible to use Socialio" });
 
-    // Gender validation
     const allowedGenders = ["male", "female", "other"];
-    if (!gender || !allowedGenders.includes(gender)) {
+    if (!gender || !allowedGenders.includes(gender))
       return res.status(400).json({ message: "Please select a valid gender" });
-    }
 
-    // Proactively check username availability
-    const existingUsername = await User.findOne({ username });
-    if (existingUsername) {
+    if (await User.findOne({ username }))
       return res.status(409).json({ message: "Username already taken. Please choose another." });
-    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     await User.updateOne(
       { email },
-      { $set: { username, password: hashedPassword, age, gender } }
+      { $set: { username, password: hashedPassword, age, gender }, $unset: { signupVerifiedExpires: "" } }
     );
     const updatedUser = await User.findOne({ email });
     res.json({
@@ -173,9 +186,8 @@ export const registerUser = async (req, res) => {
       gender: updatedUser.gender,
     });
   } catch (err) {
-    if (err.code === 11000) {
+    if (err.code === 11000)
       return res.status(409).json({ message: "Username already taken. Please choose another." });
-    }
     res.status(500).json({ message: err.message });
   }
 };
@@ -184,13 +196,14 @@ export const loginUser = async (req, res) => {
   try {
     const username = req.body.username?.toLowerCase().trim();
     const { password } = req.body;
+    const GENERIC = { message: "Invalid username or password" };
+
     const user = await User.findOne({ username });
-    if (!user) return res.status(404).json({ message: "User not found" });
-    if (!user.password)
-      return res.status(400).json({ message: "This account uses Google Sign-In. Please log in with Google." });
-    if (!user.isVerified) return res.status(400).json({ message: "Email not verified" });
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: "Invalid password" });
+    if (!user || !user.password || !user.isVerified) return res.status(400).json(GENERIC);
+
+    const isMatch = await bcrypt.compare(password || "", user.password);
+    if (!isMatch) return res.status(400).json(GENERIC);
+
     res.json({
       _id: user._id,
       username: user.username,
@@ -206,12 +219,13 @@ export const loginUser = async (req, res) => {
 export const forgotPassword = async (req, res) => {
   try {
     const email = req.body.email?.toLowerCase().trim();
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!email) return res.status(400).json({ message: "Email is required" });
 
-    // ✅ FIX: was checking otpExpires (wrong field — an expiry timestamp,
-    // not a sent-at timestamp), which effectively blocked resends for ~6
-    // minutes instead of the intended 60 seconds.
+    const user = await User.findOne({ email });
+    // same answer whether or not the account exists (no email enumeration)
+    if (!user || !user.username)
+      return res.status(200).json({ message: "If that email is registered, an OTP has been sent" });
+
     const COOLDOWN_MS = 60 * 1000;
     if (user.otpLastSentAt && Date.now() - user.otpLastSentAt < COOLDOWN_MS) {
       const waitSec = Math.ceil((COOLDOWN_MS - (Date.now() - user.otpLastSentAt)) / 1000);
@@ -219,16 +233,15 @@ export const forgotPassword = async (req, res) => {
     }
 
     const otp = generateOtp();
-    const hashedOtp = await bcrypt.hash(otp, 10);
-    user.otp = hashedOtp;
+    user.otp = await bcrypt.hash(otp, 10);
     user.otpExpires = Date.now() + 5 * 60 * 1000;
     user.otpLastSentAt = Date.now();
-    // ✅ FIX: clear any stale reset-verification flag before a fresh cycle
-    user.resetOtpVerified = false;
-    user.resetOtpVerifiedExpires = null;
+    user.otpAttempts = 0;
+    user.resetTokenHash = undefined;
+    user.resetTokenExpires = undefined;
     await user.save();
     await sendOtpEmail(email, otp);
-    res.status(200).json({ message: "OTP sent to email" });
+    res.status(200).json({ message: "If that email is registered, an OTP has been sent" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -237,28 +250,29 @@ export const forgotPassword = async (req, res) => {
 export const resetPassword = async (req, res) => {
   try {
     const email = req.body.email?.toLowerCase().trim();
-    const { newPassword } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    const { newPassword, resetToken } = req.body;
+    if (!email || !resetToken || !newPassword)
+      return res.status(400).json({ message: "Missing fields" });
+    if (newPassword.length < 6)
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
 
-    // ✅ FIX: previously checked isOtpVerified, which stays true forever
-    // after signup verification — meaning anyone could reset any verified
-    // user's password without ever requesting or entering an OTP. Now
-    // checks a flow-scoped flag with its own short expiry instead.
+    const user = await User.findOne({ email });
     if (
-      !user.resetOtpVerified ||
-      !user.resetOtpVerifiedExpires ||
-      Date.now() > user.resetOtpVerifiedExpires
+      !user ||
+      !user.resetTokenHash ||
+      !user.resetTokenExpires ||
+      Date.now() > user.resetTokenExpires ||
+      !safeEqual(sha256(String(resetToken)), user.resetTokenHash)
     ) {
-      return res.status(400).json({ message: "OTP not verified. Please verify OTP first." });
+      return res.status(400).json({ message: "Reset session expired. Please start again." });
     }
 
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    user.password = hashedPassword;
-    user.resetOtpVerified = false;
-    user.resetOtpVerifiedExpires = null;
-    user.otp = null;
-    user.otpExpires = null;
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.resetTokenHash = undefined;
+    user.resetTokenExpires = undefined;
+    user.otp = undefined;
+    user.otpExpires = undefined;
+    user.otpAttempts = 0;
     await user.save();
     res.json({ message: "Password reset successful" });
   } catch (err) {
@@ -269,7 +283,7 @@ export const resetPassword = async (req, res) => {
 export const getUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user._id)
-      .select("-password")
+      .select(PRIVATE_FIELDS)
       .populate("followRequests", "_id username profilePic")
       .populate("followers", "_id")
       .populate("following", "_id");
@@ -286,7 +300,14 @@ export const updateProfile = async (req, res) => {
     const { username, bio } = req.body;
     const currentUser = await User.findById(userId);
     let updateData = { bio };
-    if (username) updateData.username = username.toLowerCase().trim();
+   if (username) {
+  const clean = username.toLowerCase().trim();
+  if (!USERNAME_RE.test(clean))
+    return res.status(400).json({ success: false, message: "Username must be 3-20 characters: letters, numbers, . or _" });
+  if (await User.exists({ username: clean, _id: { $ne: userId } }))
+    return res.status(409).json({ success: false, message: "Username already taken" });
+  updateData.username = clean;
+}
 
     if (req.files?.profilePic) {
       const newUrl = req.files.profilePic[0].path;
@@ -304,7 +325,7 @@ export const updateProfile = async (req, res) => {
       updateData.coverPic = newUrl;
     }
 
-    const updatedUser = await User.findByIdAndUpdate(userId, updateData, { new: true }).select("-password");
+    const updatedUser = await User.findByIdAndUpdate(userId, updateData, { new: true }).select(PRIVATE_FIELDS);
 
     const io = getIO();
     io.to(`user:${userId}`).emit("profileUpdated", {
@@ -327,6 +348,8 @@ export const changePassword = async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword)
       return res.status(400).json({ message: "All fields are required" });
+    if (newPassword.length < 6)
+  return res.status(400).json({ message: "Password must be at least 6 characters" });
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
     if (!user.password)
@@ -367,14 +390,22 @@ export const changePassword = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════
 export const deleteAccount = async (req, res) => {
   try {
-    const username = req.body.username?.toLowerCase().trim();
+    const typedUsername = req.body.username?.toLowerCase().trim();
     const { password } = req.body;
 
-    const user = await User.findOne({ username });
+    if (!password)
+      return res.status(400).json({ message: "Password is required" });
+
+    // Always target the account that owns the token, never one named in the body
+    const user = await User.findById(req.user._id || req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
+    // The username field is only a "type your username to confirm" check
+    if (typedUsername !== user.username)
+      return res.status(403).json({ message: "Username does not match your account" });
+
     if (!user.password)
-      return res.status(400).json({ message: "This account uses Google Sign-In and has no password set" });
+      return res.status(400).json({ message: "This account has no password set" });
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
@@ -594,14 +625,15 @@ sweepOrphanFiles().catch((e) => console.error("[sweep] failed:", e.message));
 
 export const searchUsers = async (req, res) => {
   try {
-    const query = req.query.q || req.query.query;
+    const query = String(req.query.q || req.query.query || "").trim().slice(0, 30);
     if (!query) return res.json({ users: [] });
-    // 🚫 Strict block: hide users I blocked AND users who blocked me
     const { hidden } = await getBlockedIdSets(req.user.id);
     const users = await User.find({
-      username: { $regex: query, $options: "i" },
+      username: { $regex: escapeRegex(query), $options: "i" },
       _id: { $nin: hidden },
-    }).select("username profilePic bio isPrivate");
+    })
+      .select("username profilePic bio isPrivate")
+      .limit(30);
     res.json({ users });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -684,25 +716,24 @@ export const clearRecentSearches = async (req, res) => {
 export const getUserById = async (req, res) => {
   try {
     const userId = req.params.userId;
+    const isSelf = userId === req.user.id.toString();
+
     const user = await User.findById(userId)
-      .select("-password -otp -otpExpires")
+      .select(isSelf ? PRIVATE_FIELDS : OTHERS_HIDDEN)
       .populate("followRequests", "_id")
       .populate("followers", "_id")
       .populate("following", "_id");
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
     // 🚫 Strict block: if THEY blocked ME, their profile does not exist for me
-    if (userId !== req.user.id.toString()) {
+    if (!isSelf) {
       const theyBlockedMe = await User.exists({ _id: userId, blockedUsers: req.user.id });
       if (theyBlockedMe)
         return res.status(404).json({ success: false, message: "User not found" });
     }
     const currentUser = await User.findById(req.user.id).select("blockedUsers following");
     const isBlockedByMe = currentUser?.blockedUsers?.some((id) => id.toString() === userId) ?? false;
-
-    const isFollowedByMe = (currentUser?.following ?? []).some(
-      (id) => id.toString() === userId
-    );
-
+    const isFollowedByMe = (currentUser?.following ?? []).some((id) => id.toString() === userId);
     const followRequestPending = (user.followRequests ?? []).some(
       (id) => (id._id ?? id).toString() === req.user.id.toString()
     );
@@ -981,12 +1012,21 @@ export const getPublicReels = async (req, res) => {
       .populate("comments.user", "username profilePic")
       .populate("comments.replies.user", "username profilePic")
       .sort({ createdAt: -1 });
-    const filteredReels = reels.filter((reel) => {
-      const authorId = reel.author?._id?.toString();
-      if (!authorId) return false;
-      if (blockedIds.includes(authorId)) return false;
-      return true;
-    });
+
+    const me = currentUserId.toString();
+    const filteredReels = reels
+      .filter((reel) => {
+        const authorId = reel.author?._id?.toString();
+        return authorId && !blockedIds.includes(authorId);
+      })
+      .map((reel) => {
+        const obj = reel.toObject();
+        // Don't leak the author's block list: only say whether THEY blocked ME
+        const theyBlockedMe = (obj.author.blockedUsers || []).some((id) => id.toString() === me);
+        obj.author.blockedUsers = theyBlockedMe ? [currentUserId] : [];
+        return obj;
+      });
+
     res.json({ success: true, reels: filteredReels });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to fetch reels" });
@@ -1008,15 +1048,13 @@ export const resendOtp = async (req, res) => {
     }
 
     const otp = generateOtp();
-    const hashedOtp = await bcrypt.hash(otp, 10);
-
-    user.otp = hashedOtp;
+    user.otp = await bcrypt.hash(otp, 10);
     user.otpExpires = Date.now() + 5 * 60 * 1000;
     user.otpLastSentAt = Date.now();
+    user.otpAttempts = 0;
     await user.save();
 
     await sendOtpEmail(email, otp);
-
     res.status(200).json({ message: "OTP resent successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -1039,6 +1077,8 @@ export const googleSignup = async (req, res) => {
     if (!idToken) return res.status(400).json({ message: "idToken is required" });
 
     const payload = await verifyGoogleToken(idToken);
+    if (!payload.email_verified)
+  return res.status(400).json({ message: "Your Google email is not verified" });
     const email = payload.email?.toLowerCase().trim();
     const { sub } = payload;
 
@@ -1062,11 +1102,16 @@ export const googleSignup = async (req, res) => {
       });
     }
 
-    user = await User.findOneAndUpdate(
-      { email },
-      { email, isVerified: true, googleId: sub },
-      { upsert: true, new: true }
-    );
+user = await User.findOneAndUpdate(
+  { email },
+  {
+    email,
+    isVerified: true,
+    googleId: sub,
+    signupVerifiedExpires: Date.now() + 30 * 60 * 1000,
+  },
+  { upsert: true, new: true }
+);
 
     return res.json({
       registered: false,
@@ -1086,6 +1131,8 @@ export const googleLogin = async (req, res) => {
     if (!idToken) return res.status(400).json({ message: "idToken is required" });
 
     const payload = await verifyGoogleToken(idToken);
+    if (!payload.email_verified)
+  return res.status(400).json({ message: "Your Google email is not verified" });
     const email = payload.email?.toLowerCase().trim();
     const sub = payload.sub;
 

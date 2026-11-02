@@ -31,6 +31,7 @@ import FileRouter from "./src/routes/file.routes.js";
 import CallRouter from "./src/routes/call.routes.js";
 const PORT=process.env.PORT
 const app        = express();
+app.set("trust proxy", 1);
 const httpServer = createServer(app);
 
 // ================= SOCKET.IO =================

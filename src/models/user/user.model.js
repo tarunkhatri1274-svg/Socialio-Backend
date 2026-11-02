@@ -60,9 +60,17 @@ const userSchema = new mongoose.Schema(
     posts: [{ type: mongoose.Schema.Types.ObjectId, ref: "Post" }],
     savedPosts: [{ type: mongoose.Schema.Types.ObjectId, ref: "Post" }],
 
-    otp: String,
-    otpExpires: Date,
-    otpLastSentAt: Date,
+   otp: String,
+otpExpires: Date,
+otpLastSentAt: Date,
+otpAttempts: { type: Number, default: 0 },
+
+// one-time token proving this client verified the OTP (stored hashed)
+resetTokenHash: String,
+resetTokenExpires: Date,
+
+// how long after email verification the user may finish registering
+signupVerifiedExpires: Date,
 
     isOtpVerified: {
       type: Boolean,
