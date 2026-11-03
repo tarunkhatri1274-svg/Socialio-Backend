@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../models/user/user.model.js";
+import env from "../services/simpleENV.js";
 
 export const protect = async (req, res, next) => {
   const header = req.headers.authorization;
@@ -9,7 +10,7 @@ export const protect = async (req, res, next) => {
 
   let user;
   try {
-    const decoded = jwt.verify(header.split(" ")[1], process.env.ACCESS_TOKEN_SECRET, {
+    const decoded = jwt.verify(header.split(" ")[1], env.accesstoken, {
       algorithms: ["HS256"],
     });
     user = await User.findById(decoded.id).select(
@@ -22,11 +23,10 @@ export const protect = async (req, res, next) => {
     return res.status(500).json({ message: "Server error" });
   }
 
-  // no user, or a half-registered account (email verified but no username yet)
   if (!user || !user.username) {
     return res.status(401).json({ message: "User not found" });
   }
 
   req.user = user;
-  next(); // outside the try, so route errors are no longer reported as auth errors
+  next();
 };

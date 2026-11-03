@@ -21,3 +21,16 @@ export default {
   owneremailport, owneremail, ownerpassword, 
   cloudinaryurl, resendapikey, fromemail 
 }
+const required = {
+  ACCESS_TOKEN_SECRET: accesstoken,
+  ACCESS_TOKEN_EXPIRY: accesstokenexpire,
+  REFRESH_TOKEN_SECRET: refreshtoken,
+  REFRESH_TOKEN_EXPIRY: refreshtokenexpire,
+  MONGODB_URL: mongodb,
+};
+for (const [name, value] of Object.entries(required)) {
+  if (!value) throw new Error(`Missing required env var: ${name}`);
+}
+if (accesstoken === refreshtoken) {
+  throw new Error("ACCESS_TOKEN_SECRET and REFRESH_TOKEN_SECRET must be different");
+}

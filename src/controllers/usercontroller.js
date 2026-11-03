@@ -125,7 +125,7 @@ export const refreshAccessToken = async (req, res) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(refreshToken, env.refreshtoken);
+      decoded = jwt.verify(refreshToken, env.refreshtoken, { algorithms: ["HS256"] });
     } catch (err) {
       return res.status(401).json({ success: false, message: "Invalid or expired refresh token" });
     }
