@@ -269,7 +269,7 @@ export const TextPost = async (req, res) => {
     const media =
       req.files?.map((file) => ({
         url: file.path,
-        type: "image",
+        type: file.mimetype?.startsWith("video/") ? "video" : "image",
       })) || [];
 
     if (req.files && req.files.length > 0) {
@@ -453,10 +453,11 @@ export const AddTextPost = async (
     } = req.body;
 
     // ================= VALIDATION =================
-    if (!text) {
+    const hasMedia = Array.isArray(media) && media.some((m) => m?.url);
+    if (!text && !hasMedia) {
       return res.status(400).json({
         success: false,
-        message: "Text is required",
+        message: "Text or media is required",
       });
     }
 
@@ -478,11 +479,10 @@ export const AddTextPost = async (
           .map((id) => ({ user: id, status: "pending" }))
       : [];
 
-    // NOTE: `media` here is pre-uploaded file URLs from the
-    // frontend (no req.files), so there's no raw file size available to
-    // check server-side. If you want a hard server-side guarantee for
-    // this path too, have the frontend send { url, type, bytes } per
-    // media item and validate `bytes` here against MAX_POST_IMAGE_BYTES.
+    // NOTE: `media` here is pre-uploaded file URLs from the frontend
+    // (images AND videos). Size limits (10MB image / 20MB video) are
+    // enforced server-side by uploadPostMedia -> enforcePostMediaLimits
+    // when each file is uploaded, so the same limits as every other post.
 
     const post = await Post.create({
 
@@ -490,11 +490,15 @@ export const AddTextPost = async (
 
       postType: "text",
 
-      text,
+      text: text || "",
 
       tags: finalTags,
 
-      media: media || [],
+      // text posts can carry images AND videos. Types are whitelisted so a
+      // client can't store anything but "image" / "video".
+      media: (Array.isArray(media) ? media : [])
+        .filter((m) => m?.url)
+        .map((m) => ({ url: m.url, type: m.type === "video" ? "video" : "image" })),
 
       collaborators: initialCollaborators,
 
