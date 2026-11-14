@@ -1,12 +1,11 @@
 import Post from "../models/post/post.model.js";
 import { getIO } from "../config/sockets.js";
-import { getBlockedIdSets, isPostBlockedFor } from "../utils/blockHelper.js";
+import { isPostBlockedFor } from "../utils/blockHelper.js";
 
-// Everything EXCEPT the heavy fields, so isPostBlockedFor() still gets every
-// field it could need (author, collaborators, visibility, mentions...).
-const LIGHT_POST = "-comments -likeReactions -shares";
+// Everything except the heavy fields; isPostBlockedFor still gets what it needs.
+const LIGHT_POST = "-comments -likeReactions -shares -views";
 
-// ================= ADD VIEW =================
+// ================= ADD VIEW (counter only) =================
 export const addView = async (req, res) => {
   try {
     const { postId } = req.params;
@@ -20,24 +19,13 @@ export const addView = async (req, res) => {
       return res.status(404).json({ message: "Post not found" });
     }
 
-    const alreadyViewed = post.views.some((v) => String(v) === String(userId));
-
-    if (alreadyViewed) {
-      return res.status(200).json({
-        message: "Already viewed",
-        totalViews: post.views.length,
-        alreadyViewed: true,
-      });
-    }
-
-    // $addToSet = atomic, no duplicates, no full document save()
     const updated = await Post.findByIdAndUpdate(
       postId,
-      { $addToSet: { views: userId } },
-      { new: true, select: "views" }
+      { $inc: { viewsCount: 1 } },
+      { new: true, select: "viewsCount" }
     ).lean();
 
-    const totalViews = updated?.views?.length ?? post.views.length + 1;
+    const totalViews = updated?.viewsCount ?? 0;
 
     getIO().to(`post:${postId}`).emit(`post:${postId}:views`, { totalViews });
 
@@ -48,7 +36,7 @@ export const addView = async (req, res) => {
   }
 };
 
-// ================= GET VIEWS COUNT (lightweight, used by the app) =================
+// ================= GET VIEWS COUNT =================
 export const getViewsCount = async (req, res) => {
   try {
     const { postId } = req.params;
@@ -57,30 +45,13 @@ export const getViewsCount = async (req, res) => {
     const post = await Post.findById(postId).select(LIGHT_POST);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    // 🚫 Blocked users get 404, same as addView
     if (await isPostBlockedFor(post, userId)) {
       return res.status(404).json({ message: "Post not found" });
     }
 
-    res.status(200).json({ totalViews: post.views.length });
+    res.status(200).json({ totalViews: post.viewsCount || 0 });
   } catch (error) {
     console.error("Error fetching views count:", error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-};
-
-// ================= GET VIEWS (viewers list - app no longer calls this) =================
-export const getViews = async (req, res) => {
-  try {
-    const { postId } = req.params;
-    const post = await Post.findById(postId).populate("views", "username profilePic bio");
-    if (!post) return res.status(404).json({ message: "Post not found" });
-    const viewerId = req.user._id || req.user.id;
-    if (await isPostBlockedFor(post, viewerId)) return res.status(404).json({ message: "Post not found" });
-    const { hidden } = await getBlockedIdSets(viewerId);
-    res.status(200).json({ views: post.views.filter((u) => !hidden.includes(String(u._id))) });
-  } catch (error) {
-    console.error("Error fetching views:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
