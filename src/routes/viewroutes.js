@@ -1,10 +1,10 @@
 import express from "express";
-import  Post  from "../models/post/post.model.js";
-import { addView, getViews } from "../controllers/view.controller.js";
+import { addView, getViews, getViewsCount } from "../controllers/view.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 const ViewRouter = express.Router();
-// ================= ADD VIEW =================
+
 ViewRouter.post("/posts/:postId/views", protect, addView);
-// ================= GET VIEWS =================
+ViewRouter.get("/posts/:postId/views-count", protect, getViewsCount);
 ViewRouter.get("/posts/:postId/views", protect, getViews);
+
 export default ViewRouter;
