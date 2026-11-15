@@ -111,9 +111,7 @@ const postSchema = new mongoose.Schema(
         },
       },
     ],
-    // ================= views =================
-       // legacy field: kept only until the migration below is done, then delete it
-    views: [{ type: mongoose.Schema.Types.ObjectId, ref: "User", default: [] }],
+      // ================= views =================
     // total number of views (no user ids stored)
     viewsCount: { type: Number, default: 0 },
     // ================= COUNTS =================

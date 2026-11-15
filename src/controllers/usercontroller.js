@@ -452,7 +452,7 @@ export const deleteAccount = async (req, res) => {
           notInterested: userId,
           savedBy: userId,
           mentions: userId,
-          views: userId,
+          
           shares: { user: userId },
         },
       }

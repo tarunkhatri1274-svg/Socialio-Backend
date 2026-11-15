@@ -3,7 +3,7 @@ import { getIO } from "../config/sockets.js";
 import { isPostBlockedFor } from "../utils/blockHelper.js";
 
 // Everything except the heavy fields; isPostBlockedFor still gets what it needs.
-const LIGHT_POST = "-comments -likeReactions -shares -views";
+const LIGHT_POST = "-comments -likeReactions -shares";
 
 // ================= ADD VIEW (counter only) =================
 export const addView = async (req, res) => {
