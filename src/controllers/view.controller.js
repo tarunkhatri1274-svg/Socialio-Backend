@@ -18,7 +18,10 @@ export const addView = async (req, res) => {
     if (await isPostBlockedFor(post, userId)) {
       return res.status(404).json({ message: "Post not found" });
     }
-
+    // don't count the post owner's own views
+    if (String(post.author) === String(userId)) {
+      return res.status(200).json({ message: "Owner view not counted", totalViews: post.viewsCount || 0 });
+    }
     const updated = await Post.findByIdAndUpdate(
       postId,
       { $inc: { viewsCount: 1 } },
