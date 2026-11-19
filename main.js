@@ -29,6 +29,7 @@ import MemoryRouter from "./src/routes/memory.routes.js";
 import MuteRouter from "./src/routes/mute.routes.js"; // ← added
 import FileRouter from "./src/routes/file.routes.js";
 import CallRouter from "./src/routes/call.routes.js";
+import downloadWatermarked from "./src/routes/downloadWatermarked.js";
 const PORT=process.env.PORT
 const app        = express();
 app.set("trust proxy", 1);
@@ -93,6 +94,7 @@ app.use("/api/auth", CommentRouter);
 app.use("/api/auth", LikeRouter);
 app.use("/api/messages", MessageRouter);
 app.use("/api/auth", ShareRouter);
+app.use("/api/auth", downloadWatermarked);
 app.use("/api/auth/views", ViewRouter);
 app.use("/api/auth/notifications", NotificationRouter);
 app.use("/api/auth/notifications/settings", NotificationSettingsRouter);
