@@ -1,34 +1,17 @@
 import "./src/config/env.js";
 
 import "./src/config/firebaseAdmin.js";
-import env from "./src/services/simpleENV.js";
+import "./src/services/simpleENV.js";
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 import connectDB from "./src/db/mongodb.js";
 import { initSocket, cleanupStaleLiveStories } from "./src/config/sockets.js";
-import Conversation from "./src/models/messages/conversation.model.js";
-import UserRouter from "./src/routes/userroutes.js";
-import MediaRouter from "./src/routes/mediaroutes.js";
-import Storyrouter from "./src/routes/storyroutes.js";
-import followListRouter from "./src/routes/followlistroutes.js";
-import PrivateAccountRouter from "./src/routes/privateaccountroutes.js";
-import router from "./src/routes/routes.js";
-import LikeRouter from "./src/routes/likeRoutes.js";
-import CommentRouter from "./src/routes/commentroutes.js";
-import MessageRouter from "./src/routes/message.routes.js";
-import ShareRouter from "./src/routes/shareroutes.js";
+import "./src/models/messages/conversation.model.js"; // registers the Conversation model
+import apiRouter, { publicRouter } from "./src/routes/routes.js"; // ← every router lives in routes.js
 import { startMediaExpiryJob } from "./src/jobs/expire.media.js";
-import { startStoryExpiryJob } from "./src/jobs/expire.story.js"; // ← added
-import NotificationRouter from "./src/routes/notificationroutes.js";
-import ViewRouter from "./src/routes/viewroutes.js";
-import NotificationSettingsRouter from "./src/routes/notificationSettings.routes.js";
-import GroupRouter from "./src/routes/grouproutes.js";
-import { startNotificationExpiryJob } from "./src/jobs/expire.notification.js"; // ← added
-import MemoryRouter from "./src/routes/memory.routes.js";
-import MuteRouter from "./src/routes/mute.routes.js"; // ← added
-import FileRouter from "./src/routes/file.routes.js";
-import CallRouter from "./src/routes/call.routes.js";
+import { startStoryExpiryJob } from "./src/jobs/expire.story.js";
+import { startNotificationExpiryJob } from "./src/jobs/expire.notification.js";
 const PORT=process.env.PORT
 const app        = express();
 app.set("trust proxy", 1);
@@ -83,24 +66,11 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ================= MAIN API ROUTES =================
-app.use("/api/auth", UserRouter);
-app.use("/api/auth", followListRouter);
-app.use("/api/auth", MediaRouter);
-app.use("/api/auth", PrivateAccountRouter);
-app.use("/api/stories", Storyrouter);
-app.use("/api/auth", CommentRouter);
-app.use("/api/auth", LikeRouter);
-app.use("/api/messages", MessageRouter);
-app.use("/api/auth", ShareRouter);
-app.use("/api/auth/views", ViewRouter);
-app.use("/api/auth/notifications", NotificationRouter);
-app.use("/api/auth/notifications/settings", NotificationSettingsRouter);
-app.use("/api/groups", GroupRouter);
-app.use("/api/memories", MemoryRouter); // ← added
-app.use("/api/mute", MuteRouter); // ← added
-app.use("/files", FileRouter); // public, no auth
-app.use("/api/calls", CallRouter);
+// ================= ROUTES =================
+// All routers are registered in src/routes/routes.js (same URLs as before).
+app.use("/", publicRouter);  // /files/...  (public, no auth, no /api prefix)
+app.use("/api", apiRouter);  // /api/auth, /api/stories, /api/messages, /api/groups, ...
+
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
   res.send("Backend working");
