@@ -32,6 +32,11 @@ export const addComment = async (req, res) => {
     // 🚫 Strict block
     if (await isPostBlockedFor(post, req.user._id)) return res.status(404).json({ success: false, message: "Post not found" });
 
+        // 🚫 comments turned off by the post author (author can still comment)
+    if (post.disableComments && post.author.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Comments are turned off for this post" });
+    }
+
     post.comments.push({ user: req.user._id, text });
     await post.save();
 
@@ -202,6 +207,11 @@ export const replyComment = async (req, res) => {
 
     // ← NEW — resolve who this reply is actually directed at, before
     // pushing the new reply (so we're reading the PRE-existing thread).
+        // 🚫 replies are comments too: block them when comments are turned off
+    if (post.disableComments && post.author.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Comments are turned off for this post" });
+    }
+
     const targetReply = parentReplyId ? comment.replies.id(parentReplyId) : null;
     const targetUserId = targetReply ? targetReply.user : comment.user;
 

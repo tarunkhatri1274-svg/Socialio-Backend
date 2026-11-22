@@ -1174,7 +1174,62 @@ export const getPostById = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+// ================= UPDATE POST SETTINGS (after the post is created) =================
+// Lets the post AUTHOR change hideLikeCount / hideCommentCount /
+// disableDownload / disableComments any time from the ⋮ menu.
+// Called by usePostSettings.js in the app:
+//   PATCH /auth/update-post-settings/:postId   body: { hideLikeCount: true, ... }
+export const updatePostSettings = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const userId = req.user._id || req.user.id;
 
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    // only the author can change these (same rule as addTag / removeTag)
+    if (post.author.toString() !== userId.toString()) {
+      return res.status(403).json({ success: false, message: "Only the author can change these settings" });
+    }
+
+    // only accept real booleans, ignore anything else
+    const KEYS = ["hideLikeCount", "hideCommentCount", "disableDownload", "disableComments"];
+    let changed = false;
+    KEYS.forEach((k) => {
+      if (typeof req.body[k] === "boolean") {
+        post[k] = req.body[k];
+        changed = true;
+      }
+    });
+
+    if (!changed) {
+      return res.status(400).json({ success: false, message: "No valid settings provided" });
+    }
+
+    await post.save();
+
+    const settings = {
+      hideLikeCount: !!post.hideLikeCount,
+      hideCommentCount: !!post.hideCommentCount,
+      disableDownload: !!post.disableDownload,
+      disableComments: !!post.disableComments,
+    };
+
+    // tell every connected client so open feeds update live
+    try {
+      getIO().emit("postSettingsChanged", { postId: post._id.toString(), settings });
+    } catch (e) {
+      console.log("postSettingsChanged emit error:", e.message);
+    }
+
+    return res.status(200).json({ success: true, settings });
+  } catch (error) {
+    console.error("UPDATE POST SETTINGS ERROR:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 // router.get("/get-post/:id", protectRoute, getPostById);
 
 // ═════════════════════════════════════════════════════════════════════════

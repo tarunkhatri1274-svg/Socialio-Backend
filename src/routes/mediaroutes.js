@@ -4,7 +4,7 @@ import {
   AddMediaPost, TextPost, getPosts, AddTextPost, deletePost,
   getUserPosts, getFeed, HideFromNonFollowers, toggleNotInterested,
   removeTag, removeCollaborator, addTag, addCollaborator
-  ,getPostById, respondToCollaborator, uploadPostMedia,
+  ,getPostById, respondToCollaborator, uploadPostMedia, updatePostSettings,
 } from "../controllers/media.controllers.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
@@ -104,4 +104,10 @@ MediaRouter.patch("/collaborator-respond/:postId", protect, respondToCollaborato
 // GET POST BY ID
 // ==========================================
 MediaRouter.get("/get-post/:postId", protect, getPostById);
+
+// ==========================================
+// UPDATE POST SETTINGS (hide counts / disable download / disable comments)
+// ==========================================
+MediaRouter.patch("/update-post-settings/:postId", protect, updatePostSettings);
+
 export default MediaRouter;

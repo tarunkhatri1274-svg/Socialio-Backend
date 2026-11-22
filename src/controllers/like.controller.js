@@ -196,7 +196,16 @@ export const getPostLikers = async (req, res) => {
       return res.status(404).json({ success: false, message: "Post not found" });
     }
     const visibleLikes = post.likes.filter(u => !hidden.includes(String(u._id)));
-
+    const isPostAuthor = post.author.toString() === viewerId.toString();
+    if (post.hideLikeCount && !isPostAuthor) {
+      return res.status(200).json({
+        success: true,
+        likedBy: [],
+        totalLikes: 0,
+        reactionCounts: {},
+        mutualLikesCount: 0,
+      });
+    }
     const viewer = await User.findById(viewerId).select("following");
     const followingIds = new Set((viewer?.following || []).map(id => id.toString()));
 
